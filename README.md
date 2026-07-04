@@ -300,8 +300,8 @@ LLM_BASE_URL=https://api.deepseek.com
 LLM_CHAT_MODEL=deepseek-v4-flash
 MEM0_LLM_PROVIDER=openai
 MEM0_LLM_MODEL=deepseek-v4-flash
-MEM0_EMBEDDER_PROVIDER=fastembed
-MEM0_EMBEDDER_MODEL=BAAI/bge-small-en-v1.5
+MEM0_EMBEDDER_PROVIDER=huggingface
+MEM0_EMBEDDER_MODEL=/root/bge-model
 MEM0_EMBEDDER_DIMS=384
 SERVICE_API_KEY=change-me
 SUMMARY_INTERVAL_SECONDS=86400
@@ -311,7 +311,7 @@ DECAY_STRONG_PENALTY=0.75
 SUMMARY_RETENTION_BOOST=0.6
 ```
 
-DeepSeek 使用 OpenAI-compatible 协议，所以代码仍复用 OpenAI SDK。为了不依赖 OpenAI embedding，本项目默认使用本地 `fastembed` 作为 mem0 的向量化模型；如果你想改回 OpenAI embedding，可以设置 `MEM0_EMBEDDER_PROVIDER=openai` 并配置 OpenAI 兼容的 embedding 模型。
+DeepSeek 使用 OpenAI-compatible 协议，所以代码仍复用 OpenAI SDK。embedding 默认使用本地 SentenceTransformer 模型目录 `/root/bge-model`，并以离线模式加载；如果目录不存在，服务会直接报错，不会从 HuggingFace 自动下载模型。
 
 如果你的模型服务兼容 OpenAI API，例如通义千问百炼兼容模式，也可以把 `LLM_BASE_URL` 改成对应地址，并调整模型名。
 

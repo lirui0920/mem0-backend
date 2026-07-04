@@ -1,6 +1,7 @@
 import os
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from app.core.config import Settings
@@ -28,6 +29,8 @@ class MemoryService:
 
     def __init__(self, settings: Settings) -> None:
         os.environ.setdefault("MEM0_TELEMETRY", "False")
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         from mem0 import Memory
 
         self._settings = settings
@@ -461,6 +464,14 @@ class MemoryService:
             "model": settings.mem0_embedder_model,
             "embedding_dims": settings.mem0_embedder_dims,
         }
+        if settings.mem0_embedder_provider == "huggingface":
+            model_path = Path(settings.mem0_embedder_model)
+            if not model_path.exists():
+                raise FileNotFoundError(
+                    f"Local embedding model directory not found: {model_path}. "
+                    "Automatic HuggingFace downloads are disabled."
+                )
+            embedder_config["model_kwargs"] = {"local_files_only": True}
         if settings.mem0_embedder_provider == "openai":
             embedder_config.update(
                 {
