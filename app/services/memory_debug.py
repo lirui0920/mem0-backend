@@ -18,17 +18,65 @@ class MemoryDebugService:
     def log_memory_write(self, record: dict[str, Any]) -> None:
         self._append({"event": "memory_write", "created_epoch": int(time.time()), **record})
 
+    def log_agent_trace(self, trace: dict[str, Any]) -> None:
+        self._append({"event": "agent_trace", "created_epoch": int(time.time()), **trace})
+
+    def log_memory_lifecycle(self, memory_id: str, lifecycle_event: dict[str, Any]) -> None:
+        self._append(
+            {
+                "event": "memory_lifecycle",
+                "created_epoch": int(time.time()),
+                "memory_id": str(memory_id),
+                "lifecycle_event": lifecycle_event,
+            }
+        )
+
+    def log_memory_ranking(self, record: dict[str, Any]) -> None:
+        self._append({"event": "memory_ranking", "created_epoch": int(time.time()), **record})
+
+    def log_event_trigger(self, record: dict[str, Any]) -> None:
+        self._append({"event": "event_trigger", "created_epoch": int(time.time()), **record})
+
     def get_prompt_trace(self, request_id: str) -> dict[str, Any] | None:
         for record in reversed(self._read_all()):
             if record.get("event") == "chat_trace" and record.get("request_id") == request_id:
                 return {
                     "request_id": request_id,
+                    "trace_id": record.get("trace_id"),
                     "prompt_context": record.get("prompt_context", {}),
                     "final_prompt": record.get("final_prompt", []),
                     "retrieved_memories": record.get("retrieved_memories", []),
                     "filtered_memories": record.get("filtered_memories", []),
                 }
         return None
+
+    def get_agent_trace(self, trace_id: str) -> dict[str, Any] | None:
+        for record in reversed(self._read_all()):
+            if record.get("event") == "agent_trace" and record.get("trace_id") == trace_id:
+                return record
+        return None
+
+    def memory_lifecycle(self, memory_id: str) -> list[dict[str, Any]]:
+        lifecycle = []
+        for record in self._read_all():
+            if record.get("event") == "memory_lifecycle" and str(record.get("memory_id")) == str(memory_id):
+                lifecycle.append(record.get("lifecycle_event") or {})
+        return lifecycle
+
+    def latest_memory_ranking(self, user_id: str | None = None) -> dict[str, Any] | None:
+        for record in reversed(self._read_all()):
+            if record.get("event") != "memory_ranking":
+                continue
+            if user_id is None or record.get("user_id") == user_id:
+                return record
+        return None
+
+    def events_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        return [
+            record
+            for record in self._read_all()
+            if record.get("event") == "event_trigger" and record.get("user_id") == user_id
+        ]
 
     def stats(self) -> dict[str, Any]:
         records = self._read_all()

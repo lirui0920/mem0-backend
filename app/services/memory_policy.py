@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from app.core.config import Settings
 from app.schemas import StructuredMemory
+from app.services.memory_evolution_engine import MemoryEvolutionEngine
 from app.services.llm_service import LLMService
 from app.services.memory_service import MemoryService
 
@@ -35,7 +36,7 @@ class WriteDecision:
 
 class MemoryPolicyLayer:
     _IMPORTANCE_WEIGHTS = {"low": 0.2, "medium": 0.5, "high": 0.9}
-    _VALID_RETRIEVAL_TYPES = {"chat", "preference", "event", "summary"}
+    _VALID_RETRIEVAL_TYPES = {"chat", "sleep", "preference", "event", "summary"}
     _SECONDS_PER_DAY = 24 * 60 * 60
     _NOISE = {
         "ok",
@@ -61,6 +62,7 @@ class MemoryPolicyLayer:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._evolution_engine = MemoryEvolutionEngine(settings)
         self._recent_messages: dict[str, deque[str]] = defaultdict(lambda: deque(maxlen=12))
 
     def classify_intent(self, message: str) -> IntentClassification:
@@ -105,7 +107,7 @@ class MemoryPolicyLayer:
                 *self._core_candidates(user_id, message, memory_service, top_k),
             ]
         )
-        ranked = self.rank_memories(candidates, top_k)
+        ranked = memory_service.apply_decay_ranking(candidates, top_k)
         return [self.explain_memory(memory, intent, True) for memory in ranked]
 
     def debug_retrieve_memories(
@@ -149,7 +151,7 @@ class MemoryPolicyLayer:
             if (memory.get("metadata") or {}).get("archived") is not True
             and (memory.get("metadata") or {}).get("status") != "archived"
         ]
-        ranked = self.rank_memories(active_candidates, len(active_candidates) or candidate_limit)
+        ranked = memory_service.apply_decay_ranking(active_candidates, len(active_candidates) or candidate_limit)
         selected_ids = {self._memory_key(memory) for memory in ranked[:top_k]}
         explained = [self.explain_memory(memory, intent, self._memory_key(memory) in selected_ids) for memory in ranked]
         rejected = [
@@ -185,32 +187,13 @@ class MemoryPolicyLayer:
         top_k: int,
         now_epoch: int | None = None,
     ) -> list[dict[str, Any]]:
-        now_epoch = now_epoch or int(time.time())
-        ranked = []
-        for memory in memories:
-            item = dict(memory)
-            metadata = item.get("metadata") or {}
-            if metadata.get("archived") is True or metadata.get("status") == "archived":
-                continue
-            importance_weight = self._importance_weight(metadata)
-            relevance_score = self._relevance_score(item)
-            recency_decay = self._recency_decay(metadata, item, now_epoch)
-            evolution_bonus = 0.3 if metadata.get("status") == "core_memory" else 0.0
-            if metadata.get("type") == "summary":
-                importance_weight += self._settings.summary_retention_boost
-
-            final_score = importance_weight + relevance_score + evolution_bonus - recency_decay
-            item["policy_score"] = final_score
-            item["policy_score_components"] = {
-                "importance_weight": importance_weight,
-                "semantic_similarity": relevance_score,
-                "evolution_bonus": evolution_bonus,
-                "recency_decay": recency_decay,
-            }
-            ranked.append(item)
-
-        ranked.sort(key=lambda item: item.get("policy_score", 0.0), reverse=True)
-        return ranked[:top_k]
+        active = [
+            memory
+            for memory in memories
+            if (memory.get("metadata") or {}).get("archived") is not True
+            and (memory.get("metadata") or {}).get("status") != "archived"
+        ]
+        return self._evolution_engine.rank_memories(active, top_k, now_epoch)
 
     def explain_memory(
         self,
@@ -224,14 +207,18 @@ class MemoryPolicyLayer:
         importance_weight = float(components.get("importance_weight", 0.0))
         decay_penalty = float(components.get("recency_decay", 0.0))
         evolution_bonus = float(components.get("evolution_bonus", 0.0))
+        feedback_weight = float(components.get("feedback_weight", 0.0))
+        event_boost = float(components.get("event_boost", 0.0))
         intent_match_bonus = 0.0
-        final_score = float(item.get("policy_score", importance_weight + semantic_similarity + evolution_bonus - decay_penalty))
+        final_score = float(item.get("policy_score", item.get("evolution_score", 0.0)) or 0.0)
         item["explanation"] = {
             "reason": self._selection_reason(item, intent, selected),
             "score_breakdown": {
                 "semantic_similarity": semantic_similarity,
                 "importance_weight": importance_weight,
                 "evolution_bonus": evolution_bonus,
+                "feedback_weight": feedback_weight,
+                "event_boost": event_boost,
                 "decay_penalty": decay_penalty,
                 "intent_match_bonus": intent_match_bonus,
             },
@@ -261,10 +248,9 @@ class MemoryPolicyLayer:
         return WriteDecision(True, "candidate")
 
     def should_store_tagged_memory(self, memory: StructuredMemory) -> WriteDecision:
-        metadata = memory.metadata
-        if metadata.type in {"preference", "event", "fact"}:
+        if memory.type in {"preference", "event", "sleep", "summary"}:
             return WriteDecision(True, "valuable_memory_type")
-        if metadata.importance in {"medium", "high"} and metadata.emotion in {"happy", "sad", "anxious", "angry"}:
+        if memory.metadata.importance >= 0.5 and memory.metadata.emotion in {"happy", "sad", "anxious", "angry"}:
             return WriteDecision(True, "emotional_or_important_statement")
         return WriteDecision(False, "tagged_low_value_chat")
 
@@ -305,30 +291,30 @@ class MemoryPolicyLayer:
     def _filters_for_intent(self, intent: IntentClassification) -> dict[str, Any]:
         if intent.intent_type == "emotional_support":
             return {
-                "type": {"in": ["preference", "event", "summary"]},
+                "type": {"in": ["sleep", "preference", "event", "summary"]},
                 "NOT": [{"archived": True}, {"status": "archived"}],
             }
         if intent.intent_type == "factual_question":
             return {
-                "type": {"in": ["preference", "event"]},
+                "type": {"in": ["sleep", "preference", "event"]},
                 "logged_epoch": {"gte": int(time.time()) - 30 * self._SECONDS_PER_DAY},
                 "NOT": [{"archived": True}, {"status": "archived"}],
             }
         if intent.intent_type == "memory_recall_request":
             return {
-                "type": {"in": ["summary", "event", "preference"]},
-                "OR": [{"importance": {"in": ["high"]}}, {"status": "core_memory"}],
+                "type": {"in": ["summary", "sleep", "event", "preference"]},
+                "OR": [{"importance": {"gte": 0.8}}, {"status": "core_memory"}],
                 "NOT": [{"archived": True}, {"status": "archived"}],
             }
         if intent.intent_type == "relationship_context":
             return {
-                "type": {"in": ["chat", "preference", "event", "summary"]},
+                "type": {"in": ["chat", "sleep", "preference", "event", "summary"]},
                 "topic": {"in": ["relationship", "family", "friendship", "work"]},
                 "NOT": [{"archived": True}, {"status": "archived"}],
             }
         return {
             "NOT": [{"archived": True}, {"status": "archived"}],
-            "type": {"in": ["chat", "event"]},
+            "type": {"in": ["chat", "sleep", "event"]},
             "logged_epoch": {"gte": int(time.time()) - 7 * self._SECONDS_PER_DAY},
         }
 
@@ -374,30 +360,6 @@ class MemoryPolicyLayer:
         if self._contains_any(lower, ["happy", "great", "excited", "开心", "高兴", "兴奋", "快乐"]):
             return "happy"
         return "neutral"
-
-    def _importance_weight(self, metadata: dict[str, Any]) -> float:
-        importance_score = metadata.get("importance_score")
-        if isinstance(importance_score, int | float):
-            return float(importance_score)
-        return self._IMPORTANCE_WEIGHTS.get(str(metadata.get("importance", "medium")), 0.5)
-
-    def _recency_decay(self, metadata: dict[str, Any], memory: dict[str, Any], now_epoch: int) -> float:
-        epoch = MemoryService._memory_epoch(metadata, memory)
-        if epoch is None:
-            return 0.0
-        age_days = max(0, (now_epoch - epoch) / self._SECONDS_PER_DAY)
-        if age_days < 7:
-            return 0.0
-        if age_days <= 30:
-            return self._settings.decay_medium_penalty
-        return self._settings.decay_strong_penalty
-
-    @staticmethod
-    def _relevance_score(memory: dict[str, Any]) -> float:
-        score = memory.get("score", 0.0)
-        if isinstance(score, int | float):
-            return float(score)
-        return 0.0
 
     @staticmethod
     def _contains_any(text: str, needles: list[str]) -> bool:

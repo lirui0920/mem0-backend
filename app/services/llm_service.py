@@ -1,10 +1,12 @@
 from datetime import UTC, datetime
 from json import JSONDecodeError
+from uuid import uuid4
 
 from openai import OpenAI
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.models.memory import resolve_memory_namespace
 from app.schemas import MemorySummary, StructuredMemory
 
 
@@ -18,29 +20,37 @@ class LLMService:
 
     def tag_memory(self, user_id: str, content: str) -> StructuredMemory:
         timestamp = datetime.now(UTC).isoformat()
+        memory_id = str(uuid4())
         messages = [
             {
                 "role": "system",
                 "content": (
                     "You extract metadata for a long-term AI memory system. "
                     "Return only valid JSON matching this schema: "
-                    '{"user_id":"string","content":"string","metadata":'
+                    '{"id":"string","user_id":"string","agent_id":null,'
+                    '"namespace":"user:{user_id}","type":"chat|sleep|preference|event|summary",'
+                    '"content":"string","embedding":null,"metadata":'
                     '{"emotion":"happy|sad|angry|anxious|neutral",'
-                    '"type":"fact|chat|preference|event",'
-                    '"importance":"low|medium|high",'
+                    '"importance":0.0,'
+                    '"decay":0.0,'
+                    '"feedback_weight":0.0,'
                     '"topic":"short topic such as health, relationship, daily life, work, finance, study, travel, family, hobby, or other",'
                     '"timestamp":"ISO-8601 timestamp"}}. '
-                    "Use the supplied user_id and original message exactly. "
+                    "Use the supplied memory_id, user_id, namespace, and original message exactly. "
                     "For timestamp, use an explicit date/time from the message when present; otherwise use the supplied current timestamp. "
-                    "Classify emotion, type, importance, and topic using your language understanding. "
-                    "Importance should consider sentiment strength, urgency, durable user preferences/facts, and strong intent. "
+                    "Classify emotion, type, numeric importance from 0.0 to 1.0, and topic using your language understanding. "
+                    "Use type sleep for durable sleep-related memory, preference for durable likes/dislikes/settings, event for facts/events/plans, and chat for useful conversational context. "
+                    "Do not use type summary for a single user message. "
+                    "Importance should consider sentiment strength, urgency, durable user preferences/events, and strong intent. "
                     "Do not add facts that are not present in the message."
                 ),
             },
             {
                 "role": "user",
                 "content": (
+                    f"memory_id: {memory_id}\n"
                     f"user_id: {user_id}\n"
+                    f"namespace: {resolve_memory_namespace(user_id, 'chat')}\n"
                     f"current_timestamp: {timestamp}\n"
                     f"original_message: {content}"
                 ),

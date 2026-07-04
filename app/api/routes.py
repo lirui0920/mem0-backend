@@ -22,15 +22,21 @@ from app.schemas import (
     MemorySearchRequest,
     MemorySearchResponse,
     MemoryStabilityTestRequest,
+    SleepInput,
+    SleepResponse,
     SummaryRunRequest,
     SummaryRunResponse,
 )
+from app.services.agent_core import AgentCore
 from app.services.llm_service import LLMService
 from app.services.memory_debug import MemoryDebugService
 from app.services.memory_evolution import MemoryEvolutionEngine
+from app.services.memory_explainability_engine import MemoryExplainabilityEngine
+from app.services.memory_orchestrator import MemoryOrchestrator
 from app.services.memory_policy import MemoryPolicyLayer
 from app.services.memory_stability import MemoryStabilityTestEngine
 from app.services.memory_service import MemoryService
+from app.services.understanding_service import UnderstandingService
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 public_router = APIRouter()
@@ -67,6 +73,32 @@ def _memory_evolution() -> MemoryEvolutionEngine:
     return MemoryEvolutionEngine(get_settings())
 
 
+@lru_cache
+def _memory_explainability() -> MemoryExplainabilityEngine:
+    return MemoryExplainabilityEngine(_memory_evolution())
+
+
+@lru_cache
+def _memory_orchestrator() -> MemoryOrchestrator:
+    return MemoryOrchestrator(get_settings())
+
+
+@lru_cache
+def _understanding_service() -> UnderstandingService:
+    return UnderstandingService()
+
+
+@lru_cache
+def _agent_core() -> AgentCore:
+    return AgentCore(
+        _understanding_service(),
+        _memory_policy(),
+        _memory_service(),
+        _llm_service(),
+        _memory_orchestrator(),
+    )
+
+
 def get_memory_service(settings: Settings = Depends(get_settings)) -> MemoryService:
     _ = settings
     return _memory_service()
@@ -96,9 +128,97 @@ def get_memory_evolution(settings: Settings = Depends(get_settings)) -> MemoryEv
     return _memory_evolution()
 
 
+def get_memory_explainability(settings: Settings = Depends(get_settings)) -> MemoryExplainabilityEngine:
+    _ = settings
+    return _memory_explainability()
+
+
+def get_memory_orchestrator(settings: Settings = Depends(get_settings)) -> MemoryOrchestrator:
+    _ = settings
+    return _memory_orchestrator()
+
+
+def get_understanding_service() -> UnderstandingService:
+    return _understanding_service()
+
+
+def get_agent_core() -> AgentCore:
+    return _agent_core()
+
+
+def start_memory_orchestrator_worker() -> None:
+    _memory_orchestrator().start(_memory_service(), _llm_service())
+
+
+def stop_memory_orchestrator_worker() -> None:
+    _memory_orchestrator().stop()
+
+
 @public_router.get("/health", response_model=HealthResponse)
 async def health(settings: Settings = Depends(get_settings)) -> HealthResponse:
     return HealthResponse(status="ok", app=settings.app_name)
+
+
+@router.post("/sleep", response_model=SleepResponse)
+async def ingest_sleep(
+    payload: SleepInput,
+    background_tasks: BackgroundTasks,
+    memory_service: MemoryService = Depends(get_memory_service),
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
+    memory_evolution: MemoryEvolutionEngine = Depends(get_memory_evolution),
+) -> SleepResponse:
+    request_id = str(uuid.uuid4())
+    try:
+        write_result = await run_in_threadpool(memory_service.add_sleep_memory, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    memory = write_result["memory"]
+    memory_id = memory.id
+    memory_debug.log_memory_write(
+        {
+            "request_id": request_id,
+            "trace_id": request_id,
+            "user_id": payload.user_id,
+            "outcome": "stored",
+            "reason": "sleep_ingestion",
+            "stage": "sleep_api_mem0_add",
+            "input": payload.model_dump(mode="json"),
+            "output": {"should_store": True, "memory_id": memory_id, "result": write_result["result"]},
+            "memory": memory.model_dump(mode="json"),
+            "result": write_result["result"],
+        }
+    )
+    memory_debug.log_memory_lifecycle(
+        memory_id,
+        {
+            "event": "created",
+            "timestamp": _now_iso(),
+            "score": memory.metadata.importance,
+            "source": payload.source,
+            "trace_id": request_id,
+            "stage": "sleep_api",
+        },
+    )
+    background_tasks.add_task(
+        _update_sleep_profile_background,
+        payload.user_id,
+        memory_service,
+        memory_evolution,
+        memory_debug,
+        request_id,
+    )
+    return SleepResponse(
+        status="ok",
+        memory_id=memory_id,
+        profile_updated=True,
+        summary={
+            "duration": payload.sleep_duration,
+            "deep_sleep": payload.deep_sleep_duration,
+            "awake_count": payload.awake_count,
+            "rem_sleep": payload.rem_sleep_duration,
+        },
+    )
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -106,45 +226,40 @@ async def chat(
     payload: ChatRequest,
     background_tasks: BackgroundTasks,
     memory_service: MemoryService = Depends(get_memory_service),
-    llm_service: LLMService = Depends(get_llm_service),
-    memory_policy: MemoryPolicyLayer = Depends(get_memory_policy),
     memory_debug: MemoryDebugService = Depends(get_memory_debug),
     memory_evolution: MemoryEvolutionEngine = Depends(get_memory_evolution),
+    agent_core: AgentCore = Depends(get_agent_core),
 ) -> ChatResponse:
     request_id = str(uuid.uuid4())
-    total_start = time.perf_counter()
-    intent = memory_policy.classify_intent(payload.message)
-    retrieval_start = time.perf_counter()
-    memories = await run_in_threadpool(
-        memory_policy.retrieve_memories,
+    core_result = await run_in_threadpool(
+        agent_core.run_chat,
         payload.user_id,
         payload.message,
-        intent,
-        memory_service,
-        8,
+        payload.agent_id,
     )
-    retrieval_ms = (time.perf_counter() - retrieval_start) * 1000
-    context_messages = memory_policy.build_context_messages(payload.user_id, payload.message, intent, memories)
-    llm_start = time.perf_counter()
-    response = await run_in_threadpool(llm_service.generate_response, context_messages)
-    llm_ms = (time.perf_counter() - llm_start) * 1000
-    memory_policy.record_turn(payload.user_id, payload.message, response)
+    memory_context = core_result.memory_context
+    intent = memory_context.intent
+    memories = memory_context.retrieved_memories
+    context_messages = memory_context.context_messages
+    _log_retrieved_memories(memory_debug, memories, core_result.trace_id, payload.user_id, "chat_memory_retrieval")
     background_tasks.add_task(
         memory_evolution.reinforce_retrieved_memories,
         memories,
         memory_service,
+        core_result.trace_id,
+        memory_debug,
     )
     background_tasks.add_task(
         _store_memory_background,
         request_id,
         payload.user_id,
+        payload.agent_id,
         payload.message,
-        memory_service,
-        llm_service,
-        memory_policy,
+        memories,
+        agent_core,
         memory_debug,
+        core_result.trace_id,
     )
-    total_ms = (time.perf_counter() - total_start) * 1000
     memory_debug.log_chat_trace(
         _build_chat_trace(
             request_id,
@@ -153,18 +268,45 @@ async def chat(
             intent,
             memories,
             context_messages,
-            response,
-            retrieval_ms,
-            llm_ms,
-            total_ms,
+            core_result.response,
+            core_result.latency["retrieval_ms"],
+            core_result.latency["llm_ms"],
+            core_result.latency["total_ms"],
+            core_result.understanding.model_dump(),
+            core_result.trigger_decision.model_dump(),
+            core_result.trigger_result,
+            core_result.system_bus.model_dump(),
+            core_result.trace_id,
         )
     )
+    memory_debug.log_agent_trace(core_result.trace)
+    memory_debug.log_memory_ranking(
+        {
+            "trace_id": core_result.trace_id,
+            "user_id": payload.user_id,
+            "stage": "memory_ranking",
+            "input": {"message": payload.message, "memory_count": len(memories)},
+            "output": {"ranked_memory_ids": [str(memory.get("id")) for memory in memories if memory.get("id")]},
+            "ranking": memories,
+        }
+    )
+    if core_result.trigger_decision.action == "emit_event":
+        memory_debug.log_event_trigger(
+            {
+                "trace_id": core_result.trace_id,
+                "user_id": payload.user_id,
+                "stage": "event_decider",
+                "input": core_result.trace["stages"]["event_decider"]["input"],
+                "output": core_result.trigger_decision.model_dump(),
+                "trigger_result": core_result.trigger_result,
+            }
+        )
     return ChatResponse(
         request_id=request_id,
         user_id=payload.user_id,
-        intent=asdict(intent),
+        intent=AgentCore.intent_dict(intent),
         memory=None,
-        response=response,
+        response=core_result.response,
         memories=memories,
     )
 
@@ -173,19 +315,31 @@ async def chat(
 async def search_memory(
     payload: MemorySearchRequest,
     memory_service: MemoryService = Depends(get_memory_service),
-    memory_policy: MemoryPolicyLayer = Depends(get_memory_policy),
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
     memory_evolution: MemoryEvolutionEngine = Depends(get_memory_evolution),
+    agent_core: AgentCore = Depends(get_agent_core),
 ) -> MemorySearchResponse:
-    intent = memory_policy.classify_intent(payload.query)
-    results = await run_in_threadpool(
-        memory_policy.retrieve_memories,
-        payload.user_id,
-        payload.query,
-        intent,
-        memory_service,
-        payload.limit,
+    retrieval = await run_in_threadpool(agent_core.retrieve_memories, payload.user_id, payload.query, payload.limit)
+    results = retrieval["results"]
+    trace_id = f"search:{payload.user_id}:{int(time.time())}"
+    _log_retrieved_memories(memory_debug, results, trace_id, payload.user_id, "search_memory_retrieval")
+    memory_debug.log_memory_ranking(
+        {
+            "trace_id": trace_id,
+            "user_id": payload.user_id,
+            "stage": "memory_ranking",
+            "input": {"query": payload.query, "memory_count": len(results)},
+            "output": {"ranked_memory_ids": [str(memory.get("id")) for memory in results if memory.get("id")]},
+            "ranking": results,
+        }
     )
-    await run_in_threadpool(memory_evolution.reinforce_retrieved_memories, results, memory_service)
+    await run_in_threadpool(
+        memory_evolution.reinforce_retrieved_memories,
+        results,
+        memory_service,
+        trace_id,
+        memory_debug,
+    )
     return MemorySearchResponse(results=results)
 
 
@@ -196,22 +350,17 @@ async def search_memory_get(
     limit: int = Query(default=10, ge=1, le=50),
     debug: bool = False,
     memory_service: MemoryService = Depends(get_memory_service),
-    memory_policy: MemoryPolicyLayer = Depends(get_memory_policy),
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
     memory_evolution: MemoryEvolutionEngine = Depends(get_memory_evolution),
+    agent_core: AgentCore = Depends(get_agent_core),
 ) -> dict:
-    intent = memory_policy.classify_intent(query)
+    retrieval = await run_in_threadpool(agent_core.retrieve_memories, user_id, query, limit, debug)
+    intent = retrieval["intent"]
     if debug:
-        debug_result = await run_in_threadpool(
-            memory_policy.debug_retrieve_memories,
-            user_id,
-            query,
-            intent,
-            memory_service,
-            limit,
-        )
+        debug_result = retrieval["debug_result"]
         return {
             "debug": True,
-            "intent": asdict(debug_result["intent"]),
+            "intent": AgentCore.intent_dict(debug_result["intent"]),
             "filters": debug_result["filters"],
             "selected": debug_result["selected"],
             "ranking": debug_result["ranking"],
@@ -220,75 +369,90 @@ async def search_memory_get(
             "excluded_memory_reasons": debug_result["excluded_memory_reasons"],
             "skip_reason": debug_result["skip_reason"],
         }
-    results = await run_in_threadpool(
-        memory_policy.retrieve_memories,
-        user_id,
-        query,
-        intent,
-        memory_service,
-        limit,
+    results = retrieval["results"]
+    trace_id = f"search:{user_id}:{int(time.time())}"
+    _log_retrieved_memories(memory_debug, results, trace_id, user_id, "search_memory_retrieval")
+    memory_debug.log_memory_ranking(
+        {
+            "trace_id": trace_id,
+            "user_id": user_id,
+            "stage": "memory_ranking",
+            "input": {"query": query, "memory_count": len(results)},
+            "output": {"ranked_memory_ids": [str(memory.get("id")) for memory in results if memory.get("id")]},
+            "ranking": results,
+        }
     )
-    await run_in_threadpool(memory_evolution.reinforce_retrieved_memories, results, memory_service)
-    return {"debug": False, "intent": asdict(intent), "results": results}
+    await run_in_threadpool(
+        memory_evolution.reinforce_retrieved_memories,
+        results,
+        memory_service,
+        trace_id,
+        memory_debug,
+    )
+    return {"debug": False, "intent": AgentCore.intent_dict(intent), "results": results}
 
 
 @router.post("/memory/add", response_model=MemoryAddResponse)
 async def add_memory(
     payload: MemoryAddRequest,
-    memory_service: MemoryService = Depends(get_memory_service),
-    llm_service: LLMService = Depends(get_llm_service),
-    memory_policy: MemoryPolicyLayer = Depends(get_memory_policy),
+    agent_core: AgentCore = Depends(get_agent_core),
     memory_debug: MemoryDebugService = Depends(get_memory_debug),
 ) -> MemoryAddResponse:
     request_id = str(uuid.uuid4())
-    decision = memory_policy.should_store_message(payload.user_id, payload.content)
-    if not decision.should_store:
-        memory_debug.log_memory_write(
-            {
-                "request_id": request_id,
-                "user_id": payload.user_id,
-                "outcome": "rejected",
-                "reason": decision.reason,
-                "stage": "manual_pre_filter",
-            }
-        )
-        raise HTTPException(status_code=422, detail=f"Memory rejected by policy: {decision.reason}")
     try:
-        memory = await run_in_threadpool(llm_service.tag_memory, payload.user_id, payload.content)
+        write_result = await run_in_threadpool(
+            agent_core.store_memory_from_message,
+            payload.user_id,
+            payload.content,
+            payload.agent_id,
+            "manual",
+            "user",
+            [],
+            payload.metadata,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    tagged_decision = memory_policy.should_store_tagged_memory(memory)
-    if not tagged_decision.should_store:
+    if not write_result.should_store:
         memory_debug.log_memory_write(
             {
                 "request_id": request_id,
+                "trace_id": request_id,
                 "user_id": payload.user_id,
                 "outcome": "rejected",
-                "reason": tagged_decision.reason,
-                "stage": "manual_tagged_filter",
-                "memory": memory.model_dump(),
+                "reason": write_result.reason,
+                "stage": "manual_agent_core_decision",
+                "input": {"content": payload.content, "agent_id": payload.agent_id},
+                "output": {"should_store": False, "reason": write_result.reason},
             }
         )
-        raise HTTPException(status_code=422, detail=f"Memory rejected by policy: {tagged_decision.reason}")
+        raise HTTPException(status_code=422, detail=f"Memory rejected by AgentCore: {write_result.reason}")
 
-    result = await run_in_threadpool(
-        memory_service.add_structured_memory,
-        memory,
-        {"source": "manual", **payload.metadata},
-    )
     memory_debug.log_memory_write(
         {
             "request_id": request_id,
+            "trace_id": request_id,
             "user_id": payload.user_id,
             "outcome": "stored",
-            "reason": tagged_decision.reason,
-            "stage": "manual_mem0_add",
-            "memory": memory.model_dump(),
-            "result": result,
+            "reason": write_result.reason,
+            "stage": "manual_agent_core_store",
+            "input": {"content": payload.content, "agent_id": payload.agent_id},
+            "output": {"should_store": True, "result": write_result.result},
+            "memory": write_result.memory.model_dump() if write_result.memory else None,
+            "result": write_result.result,
         }
     )
-    await _try_auto_summary(payload.user_id, memory_service, llm_service)
-    return MemoryAddResponse(memory=memory, result=result)
+    if write_result.memory:
+        memory_debug.log_memory_lifecycle(
+            write_result.memory.id,
+            {
+                "event": "created",
+                "timestamp": _now_iso(),
+                "score": write_result.memory.metadata.importance,
+                "source": "manual",
+                "trace_id": request_id,
+            },
+        )
+    return MemoryAddResponse(memory=write_result.memory, result=write_result.result)
 
 
 @router.post("/memory/summary/run", response_model=SummaryRunResponse)
@@ -296,8 +460,9 @@ async def run_memory_summary(
     payload: SummaryRunRequest,
     memory_service: MemoryService = Depends(get_memory_service),
     llm_service: LLMService = Depends(get_llm_service),
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
 ) -> SummaryRunResponse:
-    return await _run_summary(payload.user_id, payload.force, payload.limit, memory_service, llm_service)
+    return await _run_summary(payload.user_id, payload.force, payload.limit, memory_service, llm_service, memory_debug)
 
 
 @router.get("/memory/lifecycle/{user_id}")
@@ -329,11 +494,79 @@ async def debug_stats(memory_debug: MemoryDebugService = Depends(get_memory_debu
     return memory_debug.stats()
 
 
+@router.get("/debug/memory/explain/{memory_id}")
+async def explain_memory(
+    memory_id: str,
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
+    explainability: MemoryExplainabilityEngine = Depends(get_memory_explainability),
+) -> dict:
+    latest_ranking = memory_debug.latest_memory_ranking()
+    memory = _find_memory_in_ranking(memory_id, latest_ranking)
+    lifecycle = memory_debug.memory_lifecycle(memory_id)
+    explanation = explainability.explain_memory(memory, lifecycle)
+    explanation["memory_id"] = memory_id
+    explanation["retrieval_status"] = "seen_in_latest_ranking" if memory else "not_seen_in_latest_ranking"
+    explanation["latest_ranking_trace_id"] = (latest_ranking or {}).get("trace_id")
+    return explanation
+
+
+@router.get("/debug/memory/ranking")
+async def debug_memory_ranking(
+    user_id: str = Query(min_length=1, max_length=128),
+    limit: int = Query(default=100, ge=1, le=1000),
+    memory_service: MemoryService = Depends(get_memory_service),
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
+    explainability: MemoryExplainabilityEngine = Depends(get_memory_explainability),
+) -> dict:
+    memories = await run_in_threadpool(memory_service.get_all_memories, user_id, limit)
+    ranked = explainability.explain_ranking_list(memories)
+    trace_id = f"debug-ranking:{user_id}:{int(time.time())}"
+    memory_debug.log_memory_ranking(
+        {
+            "trace_id": trace_id,
+            "user_id": user_id,
+            "stage": "debug_memory_ranking",
+            "input": {"limit": limit, "memory_count": len(memories)},
+            "output": {"ranked_memory_ids": [item["memory_id"] for item in ranked]},
+            "ranking": memories,
+        }
+    )
+    return {
+        "trace_id": trace_id,
+        "user_id": user_id,
+        "ranked": ranked,
+        "filtering_reasons": _filtering_reasons(memories),
+    }
+
+
+@router.get("/debug/agent/trace/{trace_id}")
+async def debug_agent_trace(
+    trace_id: str,
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
+) -> dict:
+    trace = memory_debug.get_agent_trace(trace_id)
+    if not trace:
+        raise HTTPException(status_code=404, detail="AgentCore trace not found.")
+    return trace
+
+
+@router.get("/debug/events/{user_id}")
+async def debug_events(
+    user_id: str,
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
+) -> dict:
+    events = memory_debug.events_for_user(user_id)
+    return {
+        "user_id": user_id,
+        "event_count": len(events),
+        "events": events,
+    }
+
+
 @router.post("/debug/memory/stability-test")
 async def memory_stability_test(
     payload: MemoryStabilityTestRequest,
-    memory_service: MemoryService = Depends(get_memory_service),
-    memory_policy: MemoryPolicyLayer = Depends(get_memory_policy),
+    agent_core: AgentCore = Depends(get_agent_core),
     llm_service: LLMService = Depends(get_llm_service),
     stability_engine: MemoryStabilityTestEngine = Depends(get_memory_stability),
 ) -> dict:
@@ -342,8 +575,7 @@ async def memory_stability_test(
         payload.user_id,
         payload.test_cases,
         payload.repeat,
-        memory_service,
-        memory_policy,
+        agent_core,
         llm_service,
     )
 
@@ -354,8 +586,9 @@ async def run_memory_evolution(
     limit: int = Query(default=1000, ge=1, le=5000),
     memory_service: MemoryService = Depends(get_memory_service),
     memory_evolution: MemoryEvolutionEngine = Depends(get_memory_evolution),
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
 ) -> dict:
-    return await run_in_threadpool(memory_evolution.run_evolution_job, user_id, memory_service, limit)
+    return await run_in_threadpool(memory_evolution.run_evolution_job, user_id, memory_service, limit, memory_debug)
 
 
 @router.get("/debug/memory/profile/{user_id}")
@@ -391,101 +624,125 @@ async def generate_diary(
     )
 
 
-async def _try_auto_summary(
-    user_id: str,
-    memory_service: MemoryService,
-    llm_service: LLMService,
-) -> None:
-    try:
-        await _run_summary(user_id, False, 500, memory_service, llm_service)
-    except Exception:
-        logger.exception("Automatic memory summary failed for user_id=%s", user_id)
-
-
 def _store_memory_background(
     request_id: str,
     user_id: str,
+    agent_id: str | None,
     message: str,
-    memory_service: MemoryService,
-    llm_service: LLMService,
-    memory_policy: MemoryPolicyLayer,
+    retrieved_memories: list[dict],
+    agent_core: AgentCore,
     memory_debug: MemoryDebugService,
+    trace_id: str | None = None,
 ) -> None:
+    trace_id = trace_id or request_id
     try:
-        decision = memory_policy.should_store_message(user_id, message)
-        if not decision.should_store:
-            memory_debug.log_memory_write(
-                {
-                    "request_id": request_id,
-                    "user_id": user_id,
-                    "outcome": "rejected",
-                    "reason": decision.reason,
-                    "stage": "pre_filter",
-                }
-            )
-            logger.info("Memory write skipped for user_id=%s reason=%s", user_id, decision.reason)
-            return
-
-        existing = memory_service.search_candidates(
+        write_result = agent_core.store_memory_from_message(
             user_id,
             message,
-            5,
-            {"NOT": [{"archived": True}]},
+            agent_id,
+            "chat",
+            "user",
+            retrieved_memories,
+            {
+                "context": {
+                    "chat_history": [],
+                    "retrieved_memories": retrieved_memories,
+                }
+            },
         )
-        decision = memory_policy.should_store_message(user_id, message, existing)
-        if not decision.should_store:
+        if not write_result.should_store:
             memory_debug.log_memory_write(
                 {
                     "request_id": request_id,
+                    "trace_id": trace_id,
                     "user_id": user_id,
                     "outcome": "rejected",
-                    "reason": decision.reason,
-                    "stage": "duplicate_filter",
+                    "reason": write_result.reason,
+                    "stage": "agent_core_write_decision",
+                    "input": {"message": message, "agent_id": agent_id, "retrieved_memory_count": len(retrieved_memories)},
+                    "output": {"should_store": False, "reason": write_result.reason},
+                    "decision": write_result.decision,
                 }
             )
-            logger.info("Memory write skipped for user_id=%s reason=%s", user_id, decision.reason)
+            logger.info("Memory write skipped for user_id=%s reason=%s", user_id, write_result.reason)
             return
 
-        memory = llm_service.tag_memory(user_id, message)
-        tagged_decision = memory_policy.should_store_tagged_memory(memory)
-        if not tagged_decision.should_store:
-            memory_debug.log_memory_write(
-                {
-                    "request_id": request_id,
-                    "user_id": user_id,
-                    "outcome": "rejected",
-                    "reason": tagged_decision.reason,
-                    "stage": "tagged_filter",
-                    "memory": memory.model_dump(),
-                }
-            )
-            logger.info("Tagged memory skipped for user_id=%s reason=%s", user_id, tagged_decision.reason)
-            return
-
-        result = memory_service.add_structured_memory(memory, {"source": "chat", "role": "user"})
         memory_debug.log_memory_write(
             {
                 "request_id": request_id,
+                "trace_id": trace_id,
                 "user_id": user_id,
                 "outcome": "stored",
-                "reason": tagged_decision.reason,
-                "stage": "mem0_add",
-                "memory": memory.model_dump(),
-                "result": result,
+                "reason": write_result.reason,
+                "stage": "agent_core_mem0_add",
+                "input": {"message": message, "agent_id": agent_id, "retrieved_memory_count": len(retrieved_memories)},
+                "output": {"should_store": True, "result": write_result.result},
+                "memory": write_result.memory.model_dump() if write_result.memory else None,
+                "result": write_result.result,
             }
         )
-        _run_summary_sync(user_id, False, 500, memory_service, llm_service)
+        if write_result.memory:
+            memory_debug.log_memory_lifecycle(
+                write_result.memory.id,
+                {
+                    "event": "created",
+                    "timestamp": _now_iso(),
+                    "score": write_result.memory.metadata.importance,
+                    "source": "chat",
+                    "trace_id": trace_id,
+                },
+            )
     except Exception:
         memory_debug.log_memory_write(
             {
                 "request_id": request_id,
+                "trace_id": trace_id,
                 "user_id": user_id,
                 "outcome": "error",
                 "reason": "background_exception",
                 "stage": "exception",
+                "input": {"message": message, "agent_id": agent_id, "retrieved_memory_count": len(retrieved_memories)},
+                "output": {"error": "background_exception"},
             }
         )
         logger.exception("Background memory processing failed for user_id=%s", user_id)
+
+
+def _update_sleep_profile_background(
+    user_id: str,
+    memory_service: MemoryService,
+    memory_evolution: MemoryEvolutionEngine,
+    memory_debug: MemoryDebugService,
+    trace_id: str,
+) -> None:
+    try:
+        profile = memory_evolution.update_sleep_profile(user_id, memory_service)
+        memory_debug.log_memory_write(
+            {
+                "request_id": trace_id,
+                "trace_id": trace_id,
+                "user_id": user_id,
+                "outcome": "updated",
+                "reason": "sleep_profile_updated",
+                "stage": "sleep_profile_update",
+                "input": {"user_id": user_id},
+                "output": profile,
+            }
+        )
+    except Exception:
+        memory_debug.log_memory_write(
+            {
+                "request_id": trace_id,
+                "trace_id": trace_id,
+                "user_id": user_id,
+                "outcome": "error",
+                "reason": "sleep_profile_update_failed",
+                "stage": "sleep_profile_update",
+                "input": {"user_id": user_id},
+                "output": {"error": "background_exception"},
+            }
+        )
+        logger.exception("Sleep profile update failed for user_id=%s", user_id)
 
 
 async def _run_summary(
@@ -494,6 +751,7 @@ async def _run_summary(
     limit: int,
     memory_service: MemoryService,
     llm_service: LLMService,
+    memory_debug: MemoryDebugService,
 ) -> SummaryRunResponse:
     should_run, reason, memories = await run_in_threadpool(memory_service.should_summarize, user_id, None, limit)
     if not force and not should_run:
@@ -508,38 +766,23 @@ async def _run_summary(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     result = await run_in_threadpool(memory_service.add_summary_memory, summary)
+    summary_memory_id = _result_memory_id(result)
+    if summary_memory_id:
+        memory_debug.log_memory_lifecycle(
+            summary_memory_id,
+            {
+                "event": "created",
+                "timestamp": _now_iso(),
+                "score": 0.9,
+                "source": "summary",
+                "source_memory_count": len(memories),
+            },
+        )
     archived_ids = await run_in_threadpool(
         memory_service.archive_memories,
         memories,
         summary.time_range.model_dump(),
     )
-    return SummaryRunResponse(
-        created=True,
-        reason="forced" if force else reason,
-        summary=summary,
-        source_memory_count=len(memories),
-        archived_memory_ids=archived_ids,
-        result=result,
-    )
-
-
-def _run_summary_sync(
-    user_id: str,
-    force: bool,
-    limit: int,
-    memory_service: MemoryService,
-    llm_service: LLMService,
-) -> SummaryRunResponse:
-    should_run, reason, memories = memory_service.should_summarize(user_id, None, limit)
-    if not force and not should_run:
-        return SummaryRunResponse(created=False, reason=reason, source_memory_count=len(memories))
-    if not memories:
-        return SummaryRunResponse(created=False, reason="no_unarchived_memories", source_memory_count=0)
-
-    start_epoch, end_epoch = _memory_time_range(memories)
-    summary = llm_service.summarize_memories(user_id, memories, start_epoch, end_epoch)
-    result = memory_service.add_summary_memory(summary)
-    archived_ids = memory_service.archive_memories(memories, summary.time_range.model_dump())
     return SummaryRunResponse(
         created=True,
         reason="forced" if force else reason,
@@ -572,6 +815,68 @@ def _memory_time_range(memories: list[dict]) -> tuple[int, int]:
     return min(epochs), max(epochs)
 
 
+def _log_retrieved_memories(
+    memory_debug: MemoryDebugService,
+    memories: list[dict],
+    trace_id: str,
+    user_id: str,
+    stage: str,
+) -> None:
+    for memory in memories:
+        memory_id = memory.get("id")
+        if not memory_id:
+            continue
+        memory_debug.log_memory_lifecycle(
+            str(memory_id),
+            {
+                "event": "retrieved",
+                "timestamp": _now_iso(),
+                "score": float(memory.get("policy_score", memory.get("score", 0.0)) or 0.0),
+                "trace_id": trace_id,
+                "user_id": user_id,
+                "stage": stage,
+            },
+        )
+
+
+def _find_memory_in_ranking(memory_id: str, ranking_record: dict | None) -> dict | None:
+    if not ranking_record:
+        return None
+    for memory in ranking_record.get("ranking", []):
+        if str(memory.get("id")) == str(memory_id):
+            return memory
+    return None
+
+
+def _filtering_reasons(memories: list[dict]) -> list[dict]:
+    reasons = []
+    for memory in memories:
+        metadata = memory.get("metadata") or {}
+        memory_id = str(memory.get("id", ""))
+        if metadata.get("archived") is True or metadata.get("status") == "archived":
+            reasons.append({"memory_id": memory_id, "filtered": True, "reason": "archived"})
+        else:
+            reasons.append({"memory_id": memory_id, "filtered": False, "reason": "eligible"})
+    return reasons
+
+
+def _result_memory_id(result) -> str | None:
+    if isinstance(result, dict):
+        candidate = result.get("id") or result.get("memory_id")
+        if candidate:
+            return str(candidate)
+        results = result.get("results")
+        if isinstance(results, list) and results:
+            return _result_memory_id(results[0])
+    if isinstance(result, list) and result:
+        return _result_memory_id(result[0])
+    return None
+
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
 def _build_chat_trace(
     request_id: str,
     user_id: str,
@@ -583,12 +888,22 @@ def _build_chat_trace(
     retrieval_ms: float,
     llm_ms: float,
     total_ms: float,
+    understanding: dict | None = None,
+    trigger_decision: dict | None = None,
+    trigger_result: dict | None = None,
+    system_bus: dict | None = None,
+    trace_id: str | None = None,
 ) -> dict:
     prompt_context = _prompt_context_from_messages(context_messages, memories)
     return {
         "request_id": request_id,
+        "trace_id": trace_id,
         "user_id": user_id,
         "user_input": user_input,
+        "understanding": understanding or {},
+        "trigger_decision": trigger_decision or {},
+        "trigger_result": trigger_result or {},
+        "system_bus": system_bus or {},
         "intent": asdict(intent),
         "retrieved_memories": [
             {

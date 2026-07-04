@@ -1,25 +1,24 @@
-from typing import Any
-from typing import Literal
+from datetime import datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.models.memory import MemoryType, UnifiedMemory, UnifiedMemoryMetadata
 
 
-class MemoryTagMetadata(BaseModel):
-    emotion: Literal["happy", "sad", "angry", "anxious", "neutral"]
-    type: Literal["fact", "chat", "preference", "event", "summary"]
-    importance: Literal["low", "medium", "high"]
+class MemoryTagMetadata(UnifiedMemoryMetadata):
+    emotion: str = Field(default="neutral", max_length=40)
     topic: str = Field(min_length=1, max_length=80)
-    timestamp: str = Field(min_length=1, max_length=64)
 
 
-class StructuredMemory(BaseModel):
-    user_id: str = Field(min_length=1, max_length=128)
-    content: str = Field(min_length=1, max_length=8000)
+class StructuredMemory(UnifiedMemory):
+    type: MemoryType
     metadata: MemoryTagMetadata
 
 
 class ChatRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
+    agent_id: str | None = Field(default=None, max_length=128)
     message: str = Field(min_length=1, max_length=8000)
 
 
@@ -30,6 +29,36 @@ class ChatResponse(BaseModel):
     memory: StructuredMemory | None = None
     response: str
     memories: list[dict[str, Any]]
+
+
+class SleepInput(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    agent_id: str | None = Field(default=None, max_length=128)
+    sleep_start: datetime
+    sleep_end: datetime
+    sleep_duration: float | None = Field(default=None, gt=0, le=24)
+    deep_sleep_duration: float | None = Field(default=None, ge=0, le=24)
+    awake_count: int | None = Field(default=None, ge=0)
+    rem_sleep_duration: float | None = Field(default=None, ge=0, le=24)
+    source: Literal["apple_shortcuts", "apple_watch", "manual"]
+
+    @model_validator(mode="after")
+    def _validate_sleep_window(self) -> "SleepInput":
+        if self.sleep_end <= self.sleep_start:
+            raise ValueError("sleep_end must be later than sleep_start.")
+        computed_duration = (self.sleep_end - self.sleep_start).total_seconds() / 3600
+        if computed_duration <= 0 or computed_duration > 24:
+            raise ValueError("sleep window must be greater than 0 and no longer than 24 hours.")
+        if self.sleep_duration is None:
+            self.sleep_duration = round(computed_duration, 2)
+        return self
+
+
+class SleepResponse(BaseModel):
+    status: str
+    memory_id: str
+    profile_updated: bool
+    summary: dict[str, Any]
 
 
 class MemorySearchRequest(BaseModel):
@@ -50,6 +79,7 @@ class MemoryStabilityTestRequest(BaseModel):
 
 class MemoryAddRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
+    agent_id: str | None = Field(default=None, max_length=128)
     content: str = Field(min_length=1, max_length=8000)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

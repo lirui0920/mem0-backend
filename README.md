@@ -35,12 +35,18 @@
 
 ```json
 {
+  "id": "8b7f5fd8-2d11-4e88-9a26-d53fd0898b1d",
   "user_id": "u_001",
+  "agent_id": null,
+  "namespace": "user:u_001",
+  "type": "event",
   "content": "我最近在准备去杭州旅行",
+  "embedding": null,
   "metadata": {
     "emotion": "happy",
-    "type": "event",
-    "importance": "medium",
+    "importance": 0.5,
+    "decay": 0.0,
+    "feedback_weight": 0.0,
     "topic": "travel",
     "timestamp": "2026-07-03T12:00:00+00:00"
   }
@@ -103,12 +109,17 @@
 `/chat` 和 `/memory/add` 在写入 mem0 前都会先调用 LLM 生成结构化标签，不使用硬编码规则。写入 mem0 的 metadata 包含：
 
 - `emotion`: `happy` / `sad` / `angry` / `anxious` / `neutral`
-- `type`: `fact` / `chat` / `preference` / `event`
-- `importance`: `low` / `medium` / `high`
+- `type`: `chat` / `sleep` / `preference` / `event` / `summary`
+- `namespace`: `user:{user_id}` / `agent:{user_id}:{agent_id}` / `summary:{user_id}`
+- `importance`: `0.0` 到 `1.0`
+- `decay`: 衰减权重，默认 `0.0`
+- `feedback_weight`: 反馈权重，默认 `0.0`
 - `topic`: 例如 `health`、`relationship`、`daily life`、`work` 等
 - `timestamp`: 消息中明确出现的时间，或当前写入时间
 - `memory_object`: 完整结构化 memory JSON
 - `logged_epoch`: 服务端写入时的 Unix 时间，用于最近 24 小时日记筛选
+
+迁移说明：旧的 `fact` 类型会在写入/更新时归一化为 `event`；旧的 `low` / `medium` / `high` importance 会归一化为 `0.2` / `0.5` / `0.9`。新写入的 memory 必须包含 `user_id`，并由服务层自动解析 `namespace`。
 
 ## Memory Control Layer
 

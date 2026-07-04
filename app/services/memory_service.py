@@ -4,7 +4,18 @@ from datetime import datetime
 from typing import Any
 
 from app.core.config import Settings
-from app.schemas import MemorySummary, StructuredMemory
+from app.models.memory import (
+    MemoryNamespaceKind,
+    MemoryType,
+    UnifiedMemory,
+    UnifiedMemoryMetadata,
+    namespace_kind_for,
+    normalize_memory_type,
+    resolve_memory_namespace,
+)
+from app.schemas import MemorySummary, SleepInput, StructuredMemory
+from app.services.memory_evolution_engine import MemoryEvolutionEngine
+from app.services.memory_router import MemoryRouteDecision, MemoryRouteInput, MemoryRouter
 
 
 class MemoryService:
@@ -21,42 +32,140 @@ class MemoryService:
 
         self._settings = settings
         self._client = Memory.from_config(self._build_config(settings))
+        self._router = MemoryRouter()
+        self._evolution_engine = MemoryEvolutionEngine(settings)
 
     def add_structured_memory(
         self,
         memory: StructuredMemory,
         extra_metadata: dict[str, Any] | None = None,
     ) -> Any:
-        importance_score = self._IMPORTANCE_WEIGHTS.get(memory.metadata.importance, 0.5)
-        metadata = {
-            **memory.metadata.model_dump(),
+        unified_memory = UnifiedMemory.model_validate(memory.model_dump())
+        write_decision = self._write_decision(extra_metadata)
+        memory_type = normalize_memory_type(write_decision.get("type") or unified_memory.type)
+        agent_id = unified_memory.agent_id or self._extra_agent_id(extra_metadata)
+        namespace = write_decision.get("namespace")
+        namespace_kind = self._namespace_kind(namespace, memory_type, agent_id)
+        if namespace_kind != "agent":
+            agent_id = None
+        importance = write_decision.get("importance", unified_memory.metadata.importance)
+        llm_tag = {
+            **unified_memory.metadata.model_dump(mode="json"),
+            "id": unified_memory.id,
+            "type": memory_type,
+            "importance": importance,
+        }
+        route_input = MemoryRouteInput(
+            user_id=unified_memory.user_id,
+            message=unified_memory.content,
+            agent_id=agent_id,
+            should_store=bool(write_decision.get("should_store", True)),
+            namespace=namespace_kind,
+            type=memory_type,
+            llm_tag=llm_tag,
+        )
+        return self._route_and_store(route_input, extra_metadata, infer=True)
+
+    def _route_and_store(
+        self,
+        route_input: MemoryRouteInput,
+        extra_metadata: dict[str, Any] | None = None,
+        infer: bool = True,
+    ) -> Any:
+        decision = self._router.route(route_input)
+        if not decision.should_store:
+            return {
+                "stored": False,
+                "route": decision.model_dump(mode="json"),
+            }
+        return self._store_routed_memory(decision, extra_metadata, infer)
+
+    def _store_routed_memory(
+        self,
+        decision: MemoryRouteDecision,
+        extra_metadata: dict[str, Any] | None = None,
+        infer: bool = True,
+    ) -> Any:
+        if not decision.should_store or decision.normalized_memory is None:
+            raise ValueError("MemoryRouteDecision must allow storage and include normalized_memory.")
+        memory = decision.normalized_memory
+        importance_score = memory.metadata.importance
+        enriched_metadata = MemoryEvolutionEngine.normalize_static({
+            **memory.to_mem0_metadata(extra_metadata),
             "importance_score": importance_score,
             "retrieval_count": 0,
             "status": "active",
             "archived": False,
-            "memory_object": memory.model_dump(),
-            **(extra_metadata or {}),
-        }
-        return self._add_memory(
-            user_id=memory.user_id,
-            content=memory.content,
-            metadata=metadata,
-        )
-
-    def _add_memory(
-        self,
-        user_id: str,
-        content: str,
-        metadata: dict[str, Any] | None = None,
-        infer: bool = True,
-    ) -> Any:
-        enriched_metadata = {
-            **(metadata or {}),
-            "user_id": user_id,
+            "event_boost": 0.0,
+            "route_reason": decision.reason,
             "logged_epoch": int(time.time()),
+        })
+        messages = [{"role": "user", "content": memory.content}]
+        return self._client.add(messages, user_id=memory.user_id, metadata=enriched_metadata, infer=infer)
+
+    def add_sleep_memory(self, sleep: SleepInput) -> dict[str, Any]:
+        content = self._format_sleep_content(sleep)
+        sleep_duration = float(sleep.sleep_duration or 0.0)
+        llm_tag = {
+            "type": "sleep",
+            "importance": 0.6,
+            "decay": 0.0,
+            "feedback_weight": 0.0,
+            "topic": "sleep",
+            "emotion": "neutral",
+            "timestamp": sleep.sleep_end.isoformat(),
         }
-        messages = [{"role": "user", "content": content}]
-        return self._client.add(messages, user_id=user_id, metadata=enriched_metadata, infer=infer)
+        route_input = MemoryRouteInput(
+            user_id=sleep.user_id,
+            agent_id=None,
+            message=content,
+            should_store=True,
+            namespace="user",
+            type="sleep",
+            llm_tag=llm_tag,
+        )
+        decision = self._router.route(route_input)
+        metadata = {
+            "source": sleep.source,
+            "role": "system",
+            "sleep_start": sleep.sleep_start.isoformat(),
+            "sleep_end": sleep.sleep_end.isoformat(),
+            "sleep_duration": sleep_duration,
+            "deep_sleep_duration": sleep.deep_sleep_duration,
+            "awake_count": sleep.awake_count,
+            "rem_sleep_duration": sleep.rem_sleep_duration,
+            "decay_profile": "low",
+            "ingestion": "sleep_api",
+        }
+        result = self._store_routed_memory(decision, metadata, infer=False)
+        return {
+            "memory": decision.normalized_memory,
+            "result": result,
+        }
+
+    @staticmethod
+    def _extra_agent_id(extra_metadata: dict[str, Any] | None = None) -> str | None:
+        if not extra_metadata:
+            return None
+        agent_id = extra_metadata.get("agent_id")
+        return str(agent_id) if agent_id else None
+
+    @staticmethod
+    def _write_decision(extra_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not extra_metadata:
+            return {}
+        decision = extra_metadata.get("memory_decision")
+        return decision if isinstance(decision, dict) else {}
+
+    @staticmethod
+    def _namespace_kind(
+        namespace: Any,
+        memory_type: MemoryType,
+        agent_id: str | None,
+    ) -> MemoryNamespaceKind:
+        if namespace in {"user", "agent", "summary"}:
+            return namespace
+        return namespace_kind_for(memory_type, agent_id)
 
     def search(self, user_id: str, query: str, limit: int = 10) -> list[dict[str, Any]]:
         active_limit = max(limit * 4, 20)
@@ -67,6 +176,7 @@ class MemoryService:
             top_k=active_limit,
             filters={
                 "user_id": user_id,
+                "namespace": resolve_memory_namespace(user_id, "chat"),
                 "type": {"ne": "summary"},
                 "NOT": [{"archived": True}],
             },
@@ -76,6 +186,7 @@ class MemoryService:
             top_k=summary_limit,
             filters={
                 "user_id": user_id,
+                "namespace": resolve_memory_namespace(user_id, "summary"),
                 "type": "summary",
             },
         )
@@ -94,7 +205,7 @@ class MemoryService:
         limit: int = 20,
         filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        effective_filters = {"user_id": user_id, **(filters or {})}
+        effective_filters = self._with_default_namespaces(user_id, filters)
         result = self._client.search(
             query=query,
             top_k=limit,
@@ -108,6 +219,7 @@ class MemoryService:
             top_k=limit,
             filters={
                 "user_id": user_id,
+                "namespace": resolve_memory_namespace(user_id, "chat"),
                 "type": {"ne": "summary"},
                 "NOT": [{"archived": True}],
                 "logged_epoch": {
@@ -122,6 +234,7 @@ class MemoryService:
         result = self._client.get_all(
             filters={
                 "user_id": user_id,
+                "namespace": resolve_memory_namespace(user_id, "chat"),
                 "type": {"ne": "summary"},
                 "NOT": [{"archived": True}],
             },
@@ -133,6 +246,7 @@ class MemoryService:
         result = self._client.get_all(
             filters={
                 "user_id": user_id,
+                "namespace": resolve_memory_namespace(user_id, "summary"),
                 "type": "summary",
             },
             top_k=limit,
@@ -141,32 +255,40 @@ class MemoryService:
 
     def get_all_memories(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
         result = self._client.get_all(
-            filters={"user_id": user_id},
+            filters=self._with_default_namespaces(user_id),
             top_k=limit,
         )
         return self._normalize_results(result)
 
     def update_memory_metadata(self, memory_id: str, metadata: dict[str, Any]) -> Any:
-        return self._client.update(memory_id=memory_id, metadata=metadata)
+        return self._client.update(memory_id=memory_id, metadata=self._canonicalize_metadata(metadata))
 
     def add_summary_memory(self, summary: MemorySummary) -> Any:
         content = self._format_summary_content(summary)
-        metadata = {
+        llm_tag = {
             "emotion": "neutral",
             "type": "summary",
-            "importance": "high",
-            "importance_score": 0.9,
-            "retrieval_count": 0,
+            "importance": 0.9,
+            "decay": 0.0,
+            "feedback_weight": 0.0,
             "topic": "summary",
             "timestamp": summary.time_range.end,
+        }
+        route_input = MemoryRouteInput(
+            user_id=summary.user_id,
+            message=content,
+            should_store=True,
+            namespace="summary",
+            type="summary",
+            llm_tag=llm_tag,
+        )
+        metadata = {
             "time_range": summary.time_range.model_dump(),
             "summary_object": summary.model_dump(),
-            "archived": False,
-            "status": "active",
             "source": "summary",
             "role": "system",
         }
-        return self._add_memory(summary.user_id, content, metadata, infer=False)
+        return self._route_and_store(route_input, metadata, infer=False)
 
     def archive_memories(self, memories: list[dict[str, Any]], summary_time_range: dict[str, Any]) -> list[str]:
         archived_ids = []
@@ -182,9 +304,50 @@ class MemoryService:
                     "summary_time_range": summary_time_range,
                 }
             )
-            self._client.update(memory_id=memory_id, metadata=metadata)
+            self.update_memory_metadata(str(memory_id), metadata)
             archived_ids.append(str(memory_id))
         return archived_ids
+
+    @staticmethod
+    def _canonicalize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+        canonical = dict(metadata or {})
+        user_id = str(canonical.get("user_id") or "")
+        if not user_id:
+            raise ValueError("Memory metadata must include user_id.")
+        memory_type = normalize_memory_type(canonical.get("type"))
+        agent_id = canonical.get("agent_id")
+        agent_id = str(agent_id) if agent_id else None
+        if "importance" not in canonical and "importance_score" in canonical:
+            canonical["importance"] = canonical["importance_score"]
+        metadata_object = UnifiedMemoryMetadata.model_validate(canonical)
+        canonical.update(
+            {
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "namespace": resolve_memory_namespace(user_id, memory_type, agent_id),
+                "namespace_kind": namespace_kind_for(memory_type, agent_id),
+                "type": memory_type,
+                "timestamp": metadata_object.timestamp.isoformat(),
+                "importance": metadata_object.importance,
+                "decay": metadata_object.decay,
+                "feedback_weight": metadata_object.feedback_weight,
+            }
+        )
+        return MemoryEvolutionEngine.normalize_static(canonical)
+
+    @staticmethod
+    def _with_default_namespaces(user_id: str, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+        effective_filters = {
+            "user_id": user_id,
+            "namespace": {
+                "in": [
+                    resolve_memory_namespace(user_id, "chat"),
+                    resolve_memory_namespace(user_id, "summary"),
+                ]
+            },
+        }
+        effective_filters.update(filters or {})
+        return effective_filters
 
     def should_summarize(self, user_id: str, now_epoch: int | None = None, limit: int = 500) -> tuple[bool, str, list[dict[str, Any]]]:
         now_epoch = now_epoch or int(time.time())
@@ -233,56 +396,7 @@ class MemoryService:
         limit: int,
         now_epoch: int | None = None,
     ) -> list[dict[str, Any]]:
-        now_epoch = now_epoch or int(time.time())
-        scored = []
-        for memory in memories:
-            ranked = dict(memory)
-            metadata = ranked.get("metadata") or {}
-            relevance_score = self._relevance_score(ranked)
-            importance_weight = self._importance_weight(metadata)
-            decay_penalty = self._time_decay_penalty(metadata, ranked, now_epoch)
-            if metadata.get("type") == "summary":
-                importance_weight += self._settings.summary_retention_boost
-
-            final_score = importance_weight + relevance_score - decay_penalty
-            ranked["decay_score"] = final_score
-            ranked["score_components"] = {
-                "importance_weight": importance_weight,
-                "relevance_score": relevance_score,
-                "time_decay_penalty": decay_penalty,
-            }
-            scored.append(ranked)
-
-        scored.sort(key=lambda item: item.get("decay_score", 0.0), reverse=True)
-        return scored[:limit]
-
-    def _importance_weight(self, metadata: dict[str, Any]) -> float:
-        importance = metadata.get("importance", "medium")
-        return self._IMPORTANCE_WEIGHTS.get(str(importance), self._IMPORTANCE_WEIGHTS["medium"])
-
-    def _time_decay_penalty(
-        self,
-        metadata: dict[str, Any],
-        memory: dict[str, Any],
-        now_epoch: int,
-    ) -> float:
-        memory_epoch = self._memory_epoch(metadata, memory)
-        if memory_epoch is None:
-            return 0.0
-
-        age_days = max(0, (now_epoch - memory_epoch) / self._SECONDS_PER_DAY)
-        if age_days < 7:
-            return 0.0
-        if age_days <= 30:
-            return self._settings.decay_medium_penalty
-        return self._settings.decay_strong_penalty
-
-    @staticmethod
-    def _relevance_score(memory: dict[str, Any]) -> float:
-        score = memory.get("score", 0.0)
-        if isinstance(score, int | float):
-            return float(score)
-        return 0.0
+        return self._evolution_engine.rank_memories(memories, limit, now_epoch)
 
     @staticmethod
     def _memory_epoch(metadata: dict[str, Any], memory: dict[str, Any]) -> int | None:
@@ -325,6 +439,21 @@ class MemoryService:
             f"Key events:\n{key_events}\n"
             f"New user preferences:\n{preferences}"
         )
+
+    @staticmethod
+    def _format_sleep_content(sleep: SleepInput) -> str:
+        lines = [
+            f"Sleep from {sleep.sleep_start.strftime('%H:%M')} to {sleep.sleep_end.strftime('%H:%M')}.",
+            f"Duration: {float(sleep.sleep_duration or 0.0):.2f}h",
+        ]
+        if sleep.deep_sleep_duration is not None:
+            lines.append(f"Deep sleep: {sleep.deep_sleep_duration:.2f}h")
+        if sleep.rem_sleep_duration is not None:
+            lines.append(f"REM sleep: {sleep.rem_sleep_duration:.2f}h")
+        if sleep.awake_count is not None:
+            lines.append(f"Awakenings: {sleep.awake_count}")
+        lines.append(f"Source: {sleep.source}")
+        return "\n".join(lines)
 
     @staticmethod
     def _build_config(settings: Settings) -> dict[str, Any]:

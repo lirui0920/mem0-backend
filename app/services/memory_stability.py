@@ -4,9 +4,8 @@ from itertools import combinations
 from statistics import mean
 from typing import Any
 
+from app.services.agent_core import AgentCore
 from app.services.llm_service import LLMService
-from app.services.memory_policy import MemoryPolicyLayer
-from app.services.memory_service import MemoryService
 
 
 class MemoryStabilityTestEngine:
@@ -15,12 +14,11 @@ class MemoryStabilityTestEngine:
         user_id: str,
         test_cases: list[str],
         repeat: int,
-        memory_service: MemoryService,
-        memory_policy: MemoryPolicyLayer,
+        agent_core: AgentCore,
         llm_service: LLMService,
     ) -> dict[str, Any]:
         per_case_results = [
-            self._run_case(user_id, test_case, repeat, memory_service, memory_policy, llm_service)
+            self._run_case(user_id, test_case, repeat, agent_core, llm_service)
             for test_case in test_cases
         ]
         summary = self._summary(per_case_results)
@@ -36,15 +34,15 @@ class MemoryStabilityTestEngine:
         user_id: str,
         test_case: str,
         repeat: int,
-        memory_service: MemoryService,
-        memory_policy: MemoryPolicyLayer,
+        agent_core: AgentCore,
         llm_service: LLMService,
     ) -> dict[str, Any]:
         runs = []
         for index in range(repeat):
-            intent = memory_policy.classify_intent(test_case)
-            memories = memory_policy.retrieve_memories(user_id, test_case, intent, memory_service, 8)
-            prompt = memory_policy.build_context_messages(user_id, test_case, intent, memories)
+            _, memory_context = agent_core.prepare_context(user_id, test_case, 8)
+            intent = memory_context.intent
+            memories = memory_context.retrieved_memories
+            prompt = memory_context.context_messages
             response = llm_service.generate_response(prompt)
             runs.append(
                 {

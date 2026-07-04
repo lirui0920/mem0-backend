@@ -4,7 +4,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import public_router, router
+from app.api.routes import (
+    public_router,
+    router,
+    start_memory_orchestrator_worker,
+    stop_memory_orchestrator_worker,
+)
 from app.core.config import get_settings
 
 
@@ -39,3 +44,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 app.include_router(public_router)
 app.include_router(router)
 
+
+@app.on_event("startup")
+async def startup_memory_orchestrator() -> None:
+    start_memory_orchestrator_worker()
+
+
+@app.on_event("shutdown")
+async def shutdown_memory_orchestrator() -> None:
+    stop_memory_orchestrator_worker()
