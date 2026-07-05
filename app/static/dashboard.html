@@ -224,6 +224,30 @@
 
     .metric span { color: var(--muted); font-size: 12px; }
 
+    .notice {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 12px 0;
+      background: var(--panel-soft);
+      color: var(--text);
+    }
+
+    .notice.ok {
+      border-color: rgba(22, 112, 60, 0.3);
+      background: #eef8f1;
+    }
+
+    .notice.warn {
+      border-color: rgba(180, 35, 24, 0.22);
+      background: #fff4f2;
+    }
+
+    .notice strong {
+      display: block;
+      margin-bottom: 3px;
+    }
+
     .section-head {
       display: flex;
       justify-content: space-between;
@@ -458,10 +482,14 @@
           </section>
 
           <section id="agent" class="view">
+            <div class="notice">
+              <strong>这里看的是已经写入库的角色总结</strong>
+              <div class="section-subtitle">“预览总结”只临时生成，不保存；“保存分主题总结”和批量导入时勾选“生成事件/偏好总结”才会写入 agent 记忆库。</div>
+            </div>
             <div class="metrics">
               <div class="metric clickable" data-agent-filter="all"><strong id="agentTotalMemories">-</strong><span>agent 总记忆</span></div>
               <div class="metric clickable" data-agent-filter="raw"><strong id="agentRawMessages">-</strong><span>原始聊天</span></div>
-              <div class="metric clickable active" data-agent-filter="summaries"><strong id="agentEventSummaries">-</strong><span>事件总结</span></div>
+              <div class="metric clickable active" data-agent-filter="summaries"><strong id="agentEventSummaries">-</strong><span>已入库总结</span></div>
               <div class="metric clickable" data-agent-filter="preferences"><strong id="agentPreferenceHints">-</strong><span>偏好/要求</span></div>
             </div>
             <div class="field-row">
@@ -482,16 +510,16 @@
             <div class="toolbar">
               <button class="primary" id="loadAgentMemories">读取角色记忆</button>
               <button id="loadAgentSummary">预览总结（不保存）</button>
-              <button id="runAgentSummary">保存分主题总结</button>
+              <button id="runAgentSummary">生成并保存总结</button>
             </div>
-            <div class="small-note">预览总结只显示一次，不写入库；保存分主题总结会写入 agent 记忆并携带时间范围。</div>
+            <div class="small-note">保存后会自动刷新左侧列表；如果“已入库总结”数量增加，就说明已经落到 agent:{user_id}:{agent_id}。</div>
             <div id="agentTypeBars" class="bar-list" style="margin-top:14px"></div>
             <div class="split" style="margin-top:14px">
               <div>
                 <div class="section-head">
                   <div>
-                    <h2>Agent Memories</h2>
-                    <div class="section-subtitle">按左侧筛选显示；推荐先看“只看总结”。</div>
+                    <h2>已保存的角色记忆</h2>
+                    <div class="section-subtitle">当前筛选会直接显示库里的记录；“只看总结”只展示已落库的事件总结。</div>
                   </div>
                 </div>
                 <div id="agentMemoriesOutput" class="result-list"></div>
@@ -499,8 +527,8 @@
               <div>
                 <div class="section-head">
                   <div>
-                    <h2>Agent Summary</h2>
-                    <div class="section-subtitle">预览总结不会保存；保存分主题总结后才会出现在左侧总结列表。</div>
+                    <h2>生成结果</h2>
+                    <div class="section-subtitle">这里显示本次预览或保存的结果；保存成功后左侧会出现同一批总结。</div>
                   </div>
                 </div>
                 <div id="agentSummaryOutput"></div>
@@ -673,6 +701,19 @@
       return item.metadata || item.normalized_memory?.metadata || {};
     }
 
+    function storedNamespace() {
+      return state.userId && state.agentId ? `agent:${state.userId}:${state.agentId}` : "agent:{user_id}:{agent_id}";
+    }
+
+    function formatMemoryTime(value) {
+      if (!value) return "";
+      try {
+        return new Date(value).toLocaleString("zh-CN", { hour12: false });
+      } catch {
+        return String(value);
+      }
+    }
+
     function countBy(items, getter) {
       return items.reduce((acc, item) => {
         const key = getter(item) || "unknown";
@@ -722,11 +763,11 @@
     function renderSummaryCards(target, items) {
       if (!items || !items.length) {
         target.innerHTML = `
-          <div class="empty">
-            <div>还没有 agent 事件总结。</div>
-            <div class="small-note">如果你刚才只是点了“预览总结（不保存）”，刷新后不会留在这里。需要点“保存分主题总结”写入记忆库。</div>
+            <div class="empty">
+              <div>还没有 agent 事件总结。</div>
+            <div class="small-note">如果你刚才只是点了“预览总结（不保存）”，刷新后不会留在这里。需要点“生成并保存总结”写入记忆库。</div>
             <div class="toolbar" style="justify-content:center">
-              <button class="primary" onclick="document.getElementById('runAgentSummary').click()">保存分主题总结</button>
+              <button class="primary" onclick="document.getElementById('runAgentSummary').click()">生成并保存总结</button>
             </div>
           </div>
         `;
@@ -736,13 +777,15 @@
         const meta = memoryMeta(item);
         const title = meta.interaction_title || meta.interaction_category || "角色事件总结";
         const range = meta.time_range || {};
-        const timeText = [range.start, range.end].filter(Boolean).join(" 至 ") || meta.timestamp || "未知时间";
+        const timeText = [formatMemoryTime(range.start), formatMemoryTime(range.end)].filter(Boolean).join(" 至 ") || formatMemoryTime(meta.timestamp) || "未知时间";
         const sourceIds = meta.source_memory_ids || meta.source_message_ids || [];
+        const namespace = meta.namespace || storedNamespace();
         return `
           <article class="summary-card">
             <div class="summary-meta">
               <span class="pill">${escapeHtml(meta.interaction_category || "summary")}</span>
               <span class="pill">${escapeHtml(timeText)}</span>
+              <span class="pill">${escapeHtml(namespace)}</span>
               ${sourceIds.length ? `<span class="pill">sources ${sourceIds.length}</span>` : ""}
             </div>
             <h3>${escapeHtml(title)}</h3>
@@ -768,6 +811,10 @@
         ["待跟进", (summary.open_loops || []).join("\n")]
       ].filter(([, body]) => body);
       target.innerHTML = `
+        <div class="notice warn">
+          <strong>这是预览，没有写入库</strong>
+          <div class="section-subtitle">要保存到 ${escapeHtml(storedNamespace())}，请点“生成并保存总结”。</div>
+        </div>
         <div class="metrics">
           <div class="metric"><strong>${escapeHtml(data.memory_count ?? 0)}</strong><span>参与总结的记忆</span></div>
           <div class="metric"><strong>${escapeHtml((summary.style_preferences || []).length)}</strong><span>风格偏好</span></div>
@@ -881,8 +928,10 @@
         } else {
           renderMemories(target, memories);
         }
+        return { memories, summaries, rawMessages, preferenceHints };
       } catch (err) {
         showError(target, err);
+        return null;
       }
     }
 
@@ -902,6 +951,8 @@
       const target = $("agentSummaryOutput");
       try {
         requireAgent();
+        const beforeCount = Number($("agentEventSummaries").textContent) || 0;
+        target.innerHTML = `<div class="notice"><strong>正在生成并保存</strong><div class="section-subtitle">会写入 ${escapeHtml(storedNamespace())}，完成后自动刷新已入库总结。</div></div>`;
         const data = await request("/memory/agent/summary/run", {
           method: "POST",
           body: JSON.stringify({
@@ -911,7 +962,25 @@
             limit: Number($("agentLimit").value || 1000)
           })
         });
+        setAgentFilter("summaries");
+        const refreshed = await loadAgentMemories();
+        const afterCount = refreshed?.summaries?.length ?? Number($("agentEventSummaries").textContent) ?? 0;
+        const createdCount = data.created_count ?? 0;
+        const savedNotice = data.created
+          ? `
+            <div class="notice ok">
+              <strong>已保存 ${escapeHtml(createdCount)} 条分主题总结</strong>
+              <div class="section-subtitle">写入位置：${escapeHtml(storedNamespace())}；已入库总结 ${escapeHtml(beforeCount)} → ${escapeHtml(afterCount)}。</div>
+            </div>
+          `
+          : `
+            <div class="notice warn">
+              <strong>这次没有创建新的总结</strong>
+              <div class="section-subtitle">原因：${escapeHtml(data.reason || "unknown")}；当前库里仍有 ${escapeHtml(afterCount)} 条已入库总结。</div>
+            </div>
+          `;
         target.innerHTML = `
+          ${savedNotice}
           <div class="metrics">
             <div class="metric"><strong>${escapeHtml(data.source_memory_count ?? 0)}</strong><span>源记忆</span></div>
             <div class="metric"><strong>${escapeHtml(data.created_count ?? 0)}</strong><span>新总结</span></div>
@@ -931,8 +1000,6 @@
             `).join("") || `<div class="empty">没有创建新的总结</div>`}
           </div>
         `;
-        setAgentFilter("summaries");
-        loadAgentMemories();
       } catch (err) {
         showError(target, err);
       }
@@ -983,6 +1050,10 @@
           })
         });
         target.innerHTML = `
+          <div class="notice ${data.created_event_summary_count ? "ok" : "warn"}">
+            <strong>${data.created_event_summary_count ? "导入总结已写入库" : "导入完成，但没有生成事件总结"}</strong>
+            <div class="section-subtitle">事件总结会写入 ${escapeHtml(storedNamespace())}；原始聊天也保存在同一个 agent namespace。</div>
+          </div>
           <div class="metrics">
             <div class="metric"><strong>${escapeHtml(data.received_count ?? 0)}</strong><span>收到消息</span></div>
             <div class="metric"><strong>${escapeHtml(data.stored_raw_count ?? 0)}</strong><span>保存原文</span></div>
