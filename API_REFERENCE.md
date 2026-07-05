@@ -256,7 +256,13 @@ importance * 0.4
   "importance": 0.7,
   "decay": 0.0,
   "feedback_weight": 0.0,
-  "event_boost": 0.0
+  "event_boost": 0.0,
+  "speaker_role": "user",
+  "speaker_id": "user_123",
+  "speaker_name": "苏苏",
+  "target_role": "agent",
+  "target_id": "assistant_a",
+  "target_name": "洛尘"
 }
 ```
 
@@ -268,6 +274,22 @@ importance * 0.4
 | `decay` | `>= 0.0` | 衰减值 |
 | `feedback_weight` | `-0.5 ~ 0.5` | 反馈强化权重 |
 | `event_boost` | `0.0 ~ 0.3` | 事件增强权重 |
+
+身份字段：
+
+| 字段 | 说明 |
+|---|---|
+| `speaker_role` | 发言者角色，聊天写入通常为 `user` |
+| `speaker_id` | 发言者稳定 ID，通常等于 `user_id` |
+| `speaker_name` | 发言者显示名，例如“苏苏” |
+| `target_role` | 被说话/被评价对象，agent 记忆通常为 `agent` |
+| `target_id` | 目标 AI 稳定 ID，通常等于 `agent_id` |
+| `target_name` | 目标 AI 显示名/网名，例如“洛尘” |
+| `subject_role` | 结构化数据主体；例如 sleep memory 的主体为 `user` |
+| `subject_id` | 结构化数据主体 ID |
+| `subject_name` | 结构化数据主体显示名 |
+
+示例：用户对某个 AI 说“你刚才是不是有点冷淡”时，长期记忆通过 `speaker_*` 和 `target_*` 明确表达“苏苏对洛尘说”，避免多角色场景中的身份混淆。
 
 ---
 

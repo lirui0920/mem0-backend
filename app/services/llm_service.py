@@ -229,6 +229,15 @@ class LLMService:
             labels = []
             if metadata.get("type"):
                 labels.append(f"type={metadata['type']}")
+            if metadata.get("speaker_role"):
+                speaker = metadata.get("speaker_name") or metadata.get("speaker_id") or metadata["speaker_role"]
+                labels.append(f"speaker={metadata['speaker_role']}:{speaker}")
+            if metadata.get("target_role"):
+                target = metadata.get("target_name") or metadata.get("target_id") or metadata["target_role"]
+                labels.append(f"target={metadata['target_role']}:{target}")
+            if metadata.get("subject_role"):
+                subject = metadata.get("subject_name") or metadata.get("subject_id") or metadata["subject_role"]
+                labels.append(f"subject={metadata['subject_role']}:{subject}")
             if metadata.get("user_name"):
                 labels.append(f"user_name={metadata['user_name']}")
             if metadata.get("agent_name"):

@@ -132,6 +132,9 @@ Dashboard 支持查看记忆总览、搜索记忆、查看 agent 专属记忆、
 - `feedback_weight`: 反馈权重，默认 `0.0`
 - `topic`: 例如 `health`、`relationship`、`daily life`、`work` 等
 - `timestamp`: 消息中明确出现的时间，或当前写入时间
+- `speaker_role` / `speaker_id` / `speaker_name`: 聊天记忆的发言者身份
+- `target_role` / `target_id` / `target_name`: agent 记忆中被说话或被评价的 AI 身份
+- `subject_role` / `subject_id` / `subject_name`: 睡眠等结构化记录的数据主体身份
 - `memory_object`: 完整结构化 memory JSON
 - `logged_epoch`: 服务端写入时的 Unix 时间，用于最近 24 小时日记筛选
 

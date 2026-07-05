@@ -425,7 +425,13 @@ async def add_memory(
             "manual",
             "user",
             [],
-            _identity_metadata(payload.user_name, payload.agent_name, payload.metadata),
+            _identity_metadata(
+                payload.user_id,
+                payload.user_name,
+                payload.agent_id,
+                payload.agent_name,
+                payload.metadata,
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -729,7 +735,7 @@ def _store_memory_background(
                     "chat_history": [],
                     "retrieved_memories": retrieved_memories,
                 },
-                **_identity_metadata(user_name, agent_name),
+                **_identity_metadata(user_id, user_name, agent_id, agent_name),
             },
         )
         if not write_result.should_store:
@@ -986,15 +992,28 @@ def _result_memory_id(result) -> str | None:
 
 
 def _identity_metadata(
+    user_id: str,
     user_name: str | None,
+    agent_id: str | None,
     agent_name: str | None,
     base: dict | None = None,
 ) -> dict:
     metadata = dict(base or {})
+    metadata.setdefault("speaker_role", "user")
+    metadata.setdefault("speaker_id", user_id)
+    metadata.setdefault("conversation_user_id", user_id)
     if user_name:
-        metadata["user_name"] = user_name
+        metadata.setdefault("user_name", user_name)
+        metadata.setdefault("speaker_name", user_name)
+        metadata.setdefault("conversation_user_name", user_name)
+    if agent_id:
+        metadata.setdefault("target_role", "agent")
+        metadata.setdefault("target_id", agent_id)
+        metadata.setdefault("conversation_agent_id", agent_id)
     if agent_name:
-        metadata["agent_name"] = agent_name
+        metadata.setdefault("agent_name", agent_name)
+        metadata.setdefault("target_name", agent_name)
+        metadata.setdefault("conversation_agent_name", agent_name)
     return metadata
 
 

@@ -464,9 +464,26 @@ class MemoryPolicyLayer:
                     metadata.get("type"),
                     metadata.get("importance"),
                     metadata.get("topic"),
+                    self._identity_label(metadata),
                 ]
                 if part
             )
             prefix = f"{index}. [{meta}] " if meta else f"{index}. "
             lines.append(prefix + content)
         return "\n".join(lines) if lines else "无相关长期记忆。"
+
+    @staticmethod
+    def _identity_label(metadata: dict[str, Any]) -> str | None:
+        speaker_role = metadata.get("speaker_role")
+        target_role = metadata.get("target_role")
+        subject_role = metadata.get("subject_role")
+        if speaker_role:
+            speaker = metadata.get("speaker_name") or metadata.get("speaker_id") or speaker_role
+            if target_role:
+                target = metadata.get("target_name") or metadata.get("target_id") or target_role
+                return f"speaker={speaker_role}:{speaker}->target={target_role}:{target}"
+            return f"speaker={speaker_role}:{speaker}"
+        if subject_role:
+            subject = metadata.get("subject_name") or metadata.get("subject_id") or subject_role
+            return f"subject={subject_role}:{subject}"
+        return None
