@@ -13,6 +13,22 @@
 
 ## API
 
+### `GET /dashboard`
+
+内置轻量后端可视化界面。服务启动后可直接访问：
+
+```text
+http://127.0.0.1:8000/dashboard
+```
+
+服务器部署后替换为实际 IP 或域名，例如：
+
+```text
+http://your-server:8000/dashboard
+```
+
+Dashboard 支持查看记忆总览、搜索记忆、查看 agent 专属记忆、生成 agent 总结、上传睡眠记录，以及查看 debug ranking/events/profile。如果配置了 `SERVICE_API_KEY`，需要在页面左侧填写 `X-API-Key`。
+
 ### `POST /chat`
 
 请求：

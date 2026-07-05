@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mewmo Memory Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --panel-soft: #f1f4f8;
+      --line: #d9e0ea;
+      --text: #172033;
+      --muted: #647084;
+      --accent: #0f766e;
+      --accent-strong: #115e59;
+      --danger: #b42318;
+      --ok: #16703c;
+      --shadow: 0 14px 36px rgba(25, 35, 55, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid var(--line);
+      background: rgba(247, 248, 251, 0.92);
+      backdrop-filter: blur(14px);
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 16px;
+      align-items: center;
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 16px 24px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin-top: 4px;
+      font-size: 13px;
+    }
+
+    .status {
+      min-width: 132px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--muted);
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .status.ok { color: var(--ok); border-color: rgba(22, 112, 60, 0.28); }
+    .status.err { color: var(--danger); border-color: rgba(180, 35, 24, 0.28); }
+
+    main {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 320px) 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel-inner { padding: 18px; }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 15px;
+      line-height: 1.3;
+      letter-spacing: 0;
+    }
+
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 84px;
+      resize: vertical;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: rgba(15, 118, 110, 0.7);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.1);
+    }
+
+    .field-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-soft);
+      border-radius: 8px 8px 0 0;
+    }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 650;
+    }
+
+    button:hover { border-color: rgba(15, 118, 110, 0.5); }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.primary:hover { background: var(--accent-strong); }
+    button.tab.active { background: var(--text); color: #fff; border-color: var(--text); }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .content {
+      padding: 18px;
+    }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1.2;
+      margin-bottom: 4px;
+    }
+
+    .metric span { color: var(--muted); font-size: 12px; }
+
+    .result-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .memory-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 12px;
+    }
+
+    .memory-title {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-height: 24px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .memory-content {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      margin: 0;
+      padding: 14px;
+      overflow: auto;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #101828;
+      color: #e6edf7;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .empty {
+      padding: 24px;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      text-align: center;
+      background: #fff;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .small-note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .topbar, .layout, .split, .field-row {
+        grid-template-columns: 1fr;
+      }
+      main { padding: 14px; }
+      .metrics { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="topbar">
+      <div>
+        <h1>Mewmo Memory Dashboard</h1>
+        <div class="subtitle">FastAPI + mem0 后端可视化面板</div>
+      </div>
+      <div id="healthStatus" class="status">Checking...</div>
+    </div>
+  </header>
+
+  <main>
+    <div class="layout">
+      <aside class="panel">
+        <div class="panel-inner">
+          <h2>连接与身份</h2>
+          <label for="baseUrl">API 地址</label>
+          <input id="baseUrl" autocomplete="off">
+
+          <label for="apiKey">X-API-Key</label>
+          <input id="apiKey" type="password" autocomplete="off" placeholder="如果服务端未设置可留空">
+
+          <label for="userId">user_id</label>
+          <input id="userId" autocomplete="off" placeholder="用户稳定 ID">
+
+          <label for="userName">user_name</label>
+          <input id="userName" autocomplete="off" placeholder="例如：苏苏">
+
+          <label for="agentId">agent_id</label>
+          <input id="agentId" autocomplete="off" placeholder="AI 角色稳定 ID">
+
+          <label for="agentName">agent_name</label>
+          <input id="agentName" autocomplete="off" placeholder="例如：洛尘">
+
+          <div class="toolbar">
+            <button class="primary" id="saveSettings">保存</button>
+            <button id="refreshAll">刷新</button>
+          </div>
+          <div class="small-note">ID 决定记忆归属，name 只作为可读 metadata。</div>
+        </div>
+      </aside>
+
+      <section class="panel">
+        <nav class="tabs">
+          <button class="tab active" data-view="overview">总览</button>
+          <button class="tab" data-view="search">搜索</button>
+          <button class="tab" data-view="agent">角色记忆</button>
+          <button class="tab" data-view="sleep">睡眠上传</button>
+          <button class="tab" data-view="debug">Debug</button>
+        </nav>
+
+        <div class="content">
+          <section id="overview" class="view active">
+            <div class="metrics">
+              <div class="metric"><strong id="totalMemories">-</strong><span>总记忆</span></div>
+              <div class="metric"><strong id="chatMemories">-</strong><span>chat</span></div>
+              <div class="metric"><strong id="sleepMemories">-</strong><span>sleep</span></div>
+              <div class="metric"><strong id="summaryMemories">-</strong><span>summary</span></div>
+            </div>
+            <div id="lifecycleOutput" class="result-list"></div>
+          </section>
+
+          <section id="search" class="view">
+            <div class="field-row">
+              <div>
+                <label for="searchQuery">搜索内容</label>
+                <input id="searchQuery" value="summary" autocomplete="off">
+              </div>
+              <div>
+                <label for="searchLimit">数量</label>
+                <input id="searchLimit" type="number" min="1" max="50" value="10">
+              </div>
+            </div>
+            <div class="toolbar">
+              <button class="primary" id="runSearch">搜索记忆</button>
+            </div>
+            <div id="searchOutput" class="result-list" style="margin-top:14px"></div>
+          </section>
+
+          <section id="agent" class="view">
+            <div class="toolbar">
+              <button class="primary" id="loadAgentMemories">读取角色记忆</button>
+              <button id="loadAgentSummary">生成角色总结</button>
+            </div>
+            <div class="split" style="margin-top:14px">
+              <div>
+                <h2>Agent Memories</h2>
+                <div id="agentMemoriesOutput" class="result-list"></div>
+              </div>
+              <div>
+                <h2>Agent Summary</h2>
+                <div id="agentSummaryOutput"></div>
+              </div>
+            </div>
+          </section>
+
+          <section id="sleep" class="view">
+            <div class="split">
+              <div>
+                <label for="sleepStart">sleep_start</label>
+                <input id="sleepStart" type="datetime-local">
+              </div>
+              <div>
+                <label for="sleepEnd">sleep_end</label>
+                <input id="sleepEnd" type="datetime-local">
+              </div>
+            </div>
+            <div class="field-row">
+              <div>
+                <label for="deepSleep">deep_sleep_duration</label>
+                <input id="deepSleep" type="number" min="0" step="0.1" placeholder="可空">
+              </div>
+              <div>
+                <label for="remSleep">rem_sleep_duration</label>
+                <input id="remSleep" type="number" min="0" step="0.1" placeholder="可空">
+              </div>
+            </div>
+            <div class="field-row">
+              <div>
+                <label for="awakeCount">awake_count</label>
+                <input id="awakeCount" type="number" min="0" step="1" placeholder="可空">
+              </div>
+              <div>
+                <label for="sleepSource">source</label>
+                <select id="sleepSource">
+                  <option value="apple_shortcuts">apple_shortcuts</option>
+                  <option value="apple_watch">apple_watch</option>
+                  <option value="manual">manual</option>
+                </select>
+              </div>
+            </div>
+            <div class="toolbar">
+              <button class="primary" id="submitSleep">上传睡眠</button>
+            </div>
+            <div id="sleepOutput" style="margin-top:14px"></div>
+          </section>
+
+          <section id="debug" class="view">
+            <div class="toolbar">
+              <button class="primary" id="loadRanking">查看 ranking</button>
+              <button id="loadEvents">查看 events</button>
+              <button id="loadProfile">查看 sleep profile</button>
+            </div>
+            <div id="debugOutput" style="margin-top:14px"></div>
+          </section>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      baseUrl: localStorage.getItem("mewmo.baseUrl") || window.location.origin,
+      apiKey: localStorage.getItem("mewmo.apiKey") || "",
+      userId: localStorage.getItem("mewmo.userId") || "",
+      userName: localStorage.getItem("mewmo.userName") || "",
+      agentId: localStorage.getItem("mewmo.agentId") || "",
+      agentName: localStorage.getItem("mewmo.agentName") || ""
+    };
+
+    function loadSettings() {
+      $("baseUrl").value = state.baseUrl;
+      $("apiKey").value = state.apiKey;
+      $("userId").value = state.userId;
+      $("userName").value = state.userName;
+      $("agentId").value = state.agentId;
+      $("agentName").value = state.agentName;
+    }
+
+    function saveSettings() {
+      state.baseUrl = $("baseUrl").value.trim().replace(/\/$/, "") || window.location.origin;
+      state.apiKey = $("apiKey").value.trim();
+      state.userId = $("userId").value.trim();
+      state.userName = $("userName").value.trim();
+      state.agentId = $("agentId").value.trim();
+      state.agentName = $("agentName").value.trim();
+      for (const [key, value] of Object.entries(state)) {
+        localStorage.setItem(`mewmo.${key}`, value);
+      }
+    }
+
+    function headers() {
+      const h = { "Content-Type": "application/json" };
+      if (state.apiKey) h["X-API-Key"] = state.apiKey;
+      return h;
+    }
+
+    function requireUser() {
+      saveSettings();
+      if (!state.userId) throw new Error("请先填写 user_id");
+    }
+
+    function requireAgent() {
+      requireUser();
+      if (!state.agentId) throw new Error("请先填写 agent_id");
+    }
+
+    async function request(path, options = {}) {
+      const res = await fetch(`${state.baseUrl}${path}`, {
+        ...options,
+        headers: { ...headers(), ...(options.headers || {}) }
+      });
+      const text = await res.text();
+      let data;
+      try { data = text ? JSON.parse(text) : {}; } catch { data = text; }
+      if (!res.ok) {
+        const message = typeof data === "object" ? JSON.stringify(data, null, 2) : String(data);
+        throw new Error(`${res.status} ${res.statusText}\n${message}`);
+      }
+      return data;
+    }
+
+    function asQuery(params) {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== null && value !== "") query.set(key, value);
+      }
+      return query.toString();
+    }
+
+    function showJson(target, data) {
+      target.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+    }
+
+    function showError(target, err) {
+      target.innerHTML = `<div class="empty" style="color:var(--danger)">${escapeHtml(err.message || String(err))}</div>`;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function memoryContent(item) {
+      return item.memory || item.content || item.normalized_memory?.content || JSON.stringify(item);
+    }
+
+    function memoryMeta(item) {
+      return item.metadata || item.normalized_memory?.metadata || {};
+    }
+
+    function renderMemories(target, items) {
+      if (!items || !items.length) {
+        target.innerHTML = `<div class="empty">没有数据</div>`;
+        return;
+      }
+      target.innerHTML = items.map((item, index) => {
+        const meta = memoryMeta(item);
+        const id = item.id || item.memory_id || meta.id || `#${index + 1}`;
+        const type = meta.type || item.type || "memory";
+        const namespace = meta.namespace || item.namespace || "";
+        const score = item.final_score ?? item.score ?? item.policy_score ?? "";
+        const scoreText = typeof score === "number" ? score.toFixed(4) : score;
+        return `
+          <article class="memory-item">
+            <div class="memory-title">
+              <span class="pill">${escapeHtml(type)}</span>
+              ${namespace ? `<span class="pill">${escapeHtml(namespace)}</span>` : ""}
+              ${scoreText !== "" ? `<span class="pill">score ${escapeHtml(scoreText)}</span>` : ""}
+              <span>${escapeHtml(id)}</span>
+            </div>
+            <div class="memory-content">${escapeHtml(memoryContent(item))}</div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    async function checkHealth() {
+      try {
+        saveSettings();
+        const data = await request("/health", { headers: {} });
+        $("healthStatus").textContent = `${data.status} · ${data.app}`;
+        $("healthStatus").className = "status ok";
+      } catch (err) {
+        $("healthStatus").textContent = "Offline";
+        $("healthStatus").className = "status err";
+      }
+    }
+
+    async function loadLifecycle() {
+      const target = $("lifecycleOutput");
+      try {
+        requireUser();
+        const data = await request(`/memory/lifecycle/${encodeURIComponent(state.userId)}`);
+        $("totalMemories").textContent = data.total_memories ?? "-";
+        $("chatMemories").textContent = data.distribution?.type?.chat ?? 0;
+        $("sleepMemories").textContent = data.distribution?.type?.sleep ?? 0;
+        $("summaryMemories").textContent = data.distribution?.type?.summary ?? 0;
+        showJson(target, data);
+      } catch (err) {
+        showError(target, err);
+      }
+    }
+
+    async function runSearch() {
+      const target = $("searchOutput");
+      try {
+        requireUser();
+        const query = asQuery({
+          user_id: state.userId,
+          query: $("searchQuery").value.trim() || "summary",
+          limit: $("searchLimit").value || 10
+        });
+        const data = await request(`/memory/search?${query}`);
+        renderMemories(target, data.results || []);
+      } catch (err) {
+        showError(target, err);
+      }
+    }
+
+    async function loadAgentMemories() {
+      const target = $("agentMemoriesOutput");
+      try {
+        requireAgent();
+        const query = asQuery({ user_id: state.userId, agent_id: state.agentId, limit: 100 });
+        const data = await request(`/memory/agent?${query}`);
+        renderMemories(target, data.memories || []);
+      } catch (err) {
+        showError(target, err);
+      }
+    }
+
+    async function loadAgentSummary() {
+      const target = $("agentSummaryOutput");
+      try {
+        requireAgent();
+        const query = asQuery({ user_id: state.userId, agent_id: state.agentId, limit: 200 });
+        const data = await request(`/memory/agent/summary?${query}`);
+        showJson(target, data);
+      } catch (err) {
+        showError(target, err);
+      }
+    }
+
+    function localDateTimeToIso(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      return date.toISOString();
+    }
+
+    function optionalNumber(value) {
+      if (value === "") return null;
+      const number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    }
+
+    async function submitSleep() {
+      const target = $("sleepOutput");
+      try {
+        requireUser();
+        const payload = {
+          user_id: state.userId,
+          user_name: state.userName || null,
+          agent_id: state.agentId || null,
+          agent_name: state.agentName || null,
+          sleep_start: localDateTimeToIso($("sleepStart").value),
+          sleep_end: localDateTimeToIso($("sleepEnd").value),
+          deep_sleep_duration: optionalNumber($("deepSleep").value),
+          awake_count: optionalNumber($("awakeCount").value),
+          rem_sleep_duration: optionalNumber($("remSleep").value),
+          source: $("sleepSource").value
+        };
+        const data = await request("/sleep", {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+        showJson(target, data);
+        loadLifecycle();
+      } catch (err) {
+        showError(target, err);
+      }
+    }
+
+    async function loadRanking() {
+      const target = $("debugOutput");
+      try {
+        requireUser();
+        const query = asQuery({ user_id: state.userId, limit: 200 });
+        const data = await request(`/debug/memory/ranking?${query}`);
+        renderMemories(target, data.ranked || []);
+      } catch (err) {
+        showError(target, err);
+      }
+    }
+
+    async function loadEvents() {
+      const target = $("debugOutput");
+      try {
+        requireUser();
+        const data = await request(`/debug/events/${encodeURIComponent(state.userId)}`);
+        showJson(target, data);
+      } catch (err) {
+        showError(target, err);
+      }
+    }
+
+    async function loadProfile() {
+      const target = $("debugOutput");
+      try {
+        requireUser();
+        const data = await request(`/debug/memory/profile/${encodeURIComponent(state.userId)}`);
+        showJson(target, data);
+      } catch (err) {
+        showError(target, err);
+      }
+    }
+
+    document.querySelectorAll(".tab").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
+        document.querySelectorAll(".view").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        $(button.dataset.view).classList.add("active");
+      });
+    });
+
+    $("saveSettings").addEventListener("click", () => {
+      saveSettings();
+      checkHealth();
+    });
+    $("refreshAll").addEventListener("click", () => {
+      saveSettings();
+      checkHealth();
+      loadLifecycle();
+    });
+    $("runSearch").addEventListener("click", runSearch);
+    $("loadAgentMemories").addEventListener("click", loadAgentMemories);
+    $("loadAgentSummary").addEventListener("click", loadAgentSummary);
+    $("submitSleep").addEventListener("click", submitSleep);
+    $("loadRanking").addEventListener("click", loadRanking);
+    $("loadEvents").addEventListener("click", loadEvents);
+    $("loadProfile").addEventListener("click", loadProfile);
+
+    loadSettings();
+    checkHealth();
+  </script>
+</body>
+</html>

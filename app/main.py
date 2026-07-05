@@ -1,8 +1,9 @@
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.routes import (
     public_router,
@@ -43,6 +44,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 app.include_router(public_router)
 app.include_router(router)
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard() -> FileResponse:
+    return FileResponse(Path(__file__).parent / "static" / "dashboard.html")
 
 
 @app.on_event("startup")

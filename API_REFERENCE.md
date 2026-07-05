@@ -63,6 +63,24 @@ GET /redoc
 
 生产环境中如果 `APP_ENV=production`，`/docs` 和 `/redoc` 会被关闭。
 
+### Dashboard
+
+后端内置一个轻量可视化面板：
+
+```text
+GET /dashboard
+```
+
+部署后可以直接访问：
+
+```text
+http://your-server:8000/dashboard
+```
+
+Dashboard 可用于查看 lifecycle、搜索记忆、查看 agent 记忆、生成 agent 总结、上传睡眠记录和查看 debug ranking/events/profile。
+
+页面本身不需要额外前端构建；如果服务端配置了 `SERVICE_API_KEY`，需要在页面左侧填写 `X-API-Key` 后再调用业务 API。
+
 ---
 
 ## 3. 认证
