@@ -337,6 +337,7 @@
           <button class="tab active" data-view="overview">总览</button>
           <button class="tab" data-view="search">搜索</button>
           <button class="tab" data-view="agent">角色记忆</button>
+          <button class="tab" data-view="import">批量导入</button>
           <button class="tab" data-view="sleep">睡眠上传</button>
           <button class="tab" data-view="debug">Debug</button>
         </nav>
@@ -385,6 +386,20 @@
                 <div id="agentSummaryOutput"></div>
               </div>
             </div>
+          </section>
+
+          <section id="import" class="view">
+            <label for="importMessages">messages JSON</label>
+            <textarea id="importMessages" style="min-height:260px"></textarea>
+            <div class="field-row">
+              <label><input id="importStoreRaw" type="checkbox" checked style="width:auto;min-height:auto"> 保存原始消息</label>
+              <label><input id="importSummarize" type="checkbox" checked style="width:auto;min-height:auto"> 生成事件/偏好总结</label>
+            </div>
+            <div class="toolbar">
+              <button class="primary" id="submitImport">上传并处理</button>
+              <button id="fillImportExample">填入示例</button>
+            </div>
+            <div id="importOutput" style="margin-top:14px"></div>
           </section>
 
           <section id="sleep" class="view">
@@ -650,6 +665,57 @@
       }
     }
 
+    function fillImportExample() {
+      $("importMessages").value = JSON.stringify([
+        {
+          "message_id": "local-1",
+          "timestamp": "2026-07-01T21:10:00+08:00",
+          "sender_role": "user",
+          "sender_name": state.userName || "苏苏",
+          "content": "今晚角色扮演你占有欲强一点，可以主动一点。"
+        },
+        {
+          "message_id": "local-2",
+          "timestamp": "2026-07-01T21:11:00+08:00",
+          "sender_role": "agent",
+          "sender_name": state.agentName || "洛尘",
+          "content": "好，我会更主动地靠近你，也会记住你喜欢这种感觉。"
+        },
+        {
+          "message_id": "local-3",
+          "timestamp": "2026-07-03T22:30:00+08:00",
+          "sender_role": "user",
+          "sender_name": state.userName || "苏苏",
+          "content": "你刚才太冷淡了，我不喜欢你在吵架的时候沉默。"
+        }
+      ], null, 2);
+    }
+
+    async function submitImport() {
+      const target = $("importOutput");
+      try {
+        requireAgent();
+        const messages = JSON.parse($("importMessages").value || "[]");
+        const data = await request("/memory/import/chat", {
+          method: "POST",
+          body: JSON.stringify({
+            user_id: state.userId,
+            user_name: state.userName || null,
+            agent_id: state.agentId,
+            agent_name: state.agentName || null,
+            source: "dashboard_import",
+            store_raw: $("importStoreRaw").checked,
+            summarize: $("importSummarize").checked,
+            messages
+          })
+        });
+        showJson(target, data);
+        loadAgentMemories();
+      } catch (err) {
+        showError(target, err);
+      }
+    }
+
     function localDateTimeToIso(value) {
       if (!value) return "";
       const date = new Date(value);
@@ -745,6 +811,8 @@
     $("loadAgentMemories").addEventListener("click", loadAgentMemories);
     $("loadAgentSummary").addEventListener("click", loadAgentSummary);
     $("runAgentSummary").addEventListener("click", runAgentSummary);
+    $("fillImportExample").addEventListener("click", fillImportExample);
+    $("submitImport").addEventListener("click", submitImport);
     $("submitSleep").addEventListener("click", submitSleep);
     $("loadRanking").addEventListener("click", loadRanking);
     $("loadEvents").addEventListener("click", loadEvents);

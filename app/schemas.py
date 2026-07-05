@@ -144,6 +144,41 @@ class AgentSummaryRunResponse(BaseModel):
     results: list[Any] = Field(default_factory=list)
 
 
+class ChatImportMessage(BaseModel):
+    message_id: str | None = Field(default=None, max_length=128)
+    timestamp: datetime
+    sender_role: Literal["user", "agent", "system"]
+    sender_id: str | None = Field(default=None, max_length=128)
+    sender_name: str | None = Field(default=None, max_length=128)
+    content: str = Field(min_length=1, max_length=8000)
+
+
+class ChatImportRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    user_name: str | None = Field(default=None, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+    agent_name: str | None = Field(default=None, max_length=128)
+    source: str = Field(default="local_chat_import", max_length=80)
+    store_raw: bool = True
+    summarize: bool = True
+    messages: list[ChatImportMessage] = Field(min_length=1, max_length=1000)
+
+
+class ChatImportResponse(BaseModel):
+    status: str
+    import_id: str
+    user_id: str
+    agent_id: str
+    received_count: int
+    stored_raw_count: int = 0
+    created_event_summary_count: int = 0
+    created_user_preference_count: int = 0
+    raw_memory_ids: list[str] = Field(default_factory=list)
+    event_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    user_preferences: list[dict[str, Any]] = Field(default_factory=list)
+    results: list[Any] = Field(default_factory=list)
+
+
 class DiaryGenerateRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
     timezone: str = Field(default="Asia/Shanghai", max_length=64)

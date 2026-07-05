@@ -246,6 +246,59 @@ class LLMService:
         summary["events"] = events if isinstance(events, list) else []
         return summary
 
+    def summarize_imported_chat_batch(
+        self,
+        user_id: str,
+        agent_id: str,
+        messages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        chat_context = self._format_import_messages(messages)
+        llm_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你负责把导入的本地历史聊天记录整理成长期记忆。"
+                    "输入是按时间排序的原始消息，每条都有 timestamp、sender_role、sender_name 和 content。"
+                    "请从原始消息中提取两类结果："
+                    "1. agent_events：用户和该 AI 角色之间的分主题互动事件总结，写回 agent 记忆；"
+                    "2. user_preferences：稳定的全局用户偏好，写回 user 记忆。"
+                    "不要把角色扮演、日常分享、吵架/冲突、调情风格、用户对该 AI 的要求挤在同一条事件里。"
+                    "事件类必须尽量携带 start_time 和 end_time；如果只能确定单条消息时间，start_time 和 end_time 可以相同。"
+                    "所有总结都必须明确是历史记录，不要暗示发生在今天。"
+                    "请只基于输入，不要编造。"
+                    "Return only valid JSON matching this schema: "
+                    '{"user_id":"string","agent_id":"string",'
+                    '"agent_events":[{"category":"roleplay|daily_share|conflict|flirting_style|agent_preference|boundary|repair|other",'
+                    '"title":"string","summary":"string","preference_update":"string","follow_up":"string",'
+                    '"importance":0.0,"start_time":"ISO-8601 or empty","end_time":"ISO-8601 or empty",'
+                    '"source_message_ids":["string"]}],'
+                    '"user_preferences":[{"category":"food|sleep|health|communication|lifestyle|boundary|other",'
+                    '"summary":"string","importance":0.0,"start_time":"ISO-8601 or empty","end_time":"ISO-8601 or empty",'
+                    '"source_message_ids":["string"]}]}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"user_id: {user_id}\n"
+                    f"agent_id: {agent_id}\n\n"
+                    f"导入聊天记录:\n{chat_context}"
+                ),
+            },
+        ]
+        raw = self._complete_json(llm_messages, max_tokens=2400)
+        try:
+            summary = __import__("json").loads(raw)
+        except JSONDecodeError as exc:
+            raise ValueError(f"LLM returned invalid imported chat summary JSON: {raw}") from exc
+        summary["user_id"] = user_id
+        summary["agent_id"] = agent_id
+        if not isinstance(summary.get("agent_events"), list):
+            summary["agent_events"] = []
+        if not isinstance(summary.get("user_preferences"), list):
+            summary["user_preferences"] = []
+        return summary
+
     def _complete(self, messages: list[dict[str, str]]) -> str:
         completion = self._client.chat.completions.create(
             model=self._settings.llm_chat_model,
@@ -301,3 +354,19 @@ class LLMService:
             label_text = f" [{' / '.join(labels)}]" if labels else ""
             lines.append(f"{index}. {content}{label_text}{score_text}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_import_messages(messages: list[dict[str, Any]]) -> str:
+        lines = []
+        for index, message in enumerate(messages, start=1):
+            message_id = message.get("message_id") or f"import:{index}"
+            timestamp = message.get("timestamp") or ""
+            sender_role = message.get("sender_role") or ""
+            sender_name = message.get("sender_name") or message.get("sender_id") or ""
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            lines.append(
+                f"{index}. id={message_id} time={timestamp} sender={sender_role}:{sender_name} content={content}"
+            )
+        return "\n".join(lines) if lines else "暂无导入聊天记录。"

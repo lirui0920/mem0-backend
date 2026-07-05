@@ -123,6 +123,32 @@ Dashboard 支持查看记忆总览、搜索记忆、查看 agent 专属记忆、
 
 该接口会尽量按主题拆分，例如角色扮演、日常分享、冲突/吵架、调情风格、用户对该 AI 的偏好要求，而不是把所有内容挤进一条 summary。每条事件总结会带 `interaction_category`、`time_range`、`source_memory_ids` 和 `timestamp`，避免后续检索时把几天前的事误认为今天刚发生。
 
+### `POST /memory/import/chat`
+
+批量导入本地历史聊天记录。每条消息需要带原始时间、发言者和正文；后端可以保存原始消息，并从原始记录中提取 agent 分主题事件总结和全局用户偏好。
+
+```json
+{
+  "user_id": "u_001",
+  "user_name": "苏苏",
+  "agent_id": "agent_001",
+  "agent_name": "洛尘",
+  "store_raw": true,
+  "summarize": true,
+  "messages": [
+    {
+      "message_id": "local-1",
+      "timestamp": "2026-07-01T21:10:00+08:00",
+      "sender_role": "user",
+      "sender_name": "苏苏",
+      "content": "今晚角色扮演你占有欲强一点，可以主动一点。"
+    }
+  ]
+}
+```
+
+原始消息写入 `agent:{user_id}:{agent_id}`；agent 互动事件总结写回 agent 库；稳定的全局用户偏好写入 `user:{user_id}`。事件类记忆会携带 `timestamp`、`time_range` 和 `source_message_ids`。
+
 ### `POST /diary/generate`
 
 ```json

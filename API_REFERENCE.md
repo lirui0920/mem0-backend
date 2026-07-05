@@ -732,6 +732,112 @@ Debug 模式：
 
 ---
 
+### POST `/memory/import/chat`
+
+批量导入本地历史聊天记录，适合一次性上传某个用户和某个 AI 角色过去数天的聊天。每条消息必须带原始时间、发言者和正文。
+
+处理流程：
+
+```text
+导入 messages
+→ 按 timestamp 排序
+→ 可选：逐条保存原始消息到 agent:{user_id}:{agent_id}
+→ 可选：LLM 从原始消息中提取分主题 agent 事件总结
+→ 可选：LLM 从原始消息中提取全局用户偏好
+→ 事件类记忆带 timestamp / time_range / source_message_ids
+```
+
+#### Request
+
+```json
+{
+  "user_id": "user_123",
+  "user_name": "苏苏",
+  "agent_id": "assistant_a",
+  "agent_name": "洛尘",
+  "source": "local_chat_import",
+  "store_raw": true,
+  "summarize": true,
+  "messages": [
+    {
+      "message_id": "local-1",
+      "timestamp": "2026-07-01T21:10:00+08:00",
+      "sender_role": "user",
+      "sender_id": "user_123",
+      "sender_name": "苏苏",
+      "content": "今晚角色扮演你占有欲强一点，可以主动一点。"
+    },
+    {
+      "message_id": "local-2",
+      "timestamp": "2026-07-01T21:11:00+08:00",
+      "sender_role": "agent",
+      "sender_id": "assistant_a",
+      "sender_name": "洛尘",
+      "content": "好，我会更主动地靠近你，也会记住你喜欢这种感觉。"
+    }
+  ]
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---:|---|
+| `user_id` | string | 是 | 用户稳定 ID |
+| `user_name` | string/null | 否 | 用户显示名 |
+| `agent_id` | string | 是 | AI 角色稳定 ID |
+| `agent_name` | string/null | 否 | AI 角色显示名 |
+| `source` | string | 否 | 导入来源，默认 `local_chat_import` |
+| `store_raw` | bool | 否 | 是否保存每条原始消息，默认 true |
+| `summarize` | bool | 否 | 是否生成事件/偏好总结，默认 true |
+| `messages` | array | 是 | 1 到 1000 条消息 |
+| `messages[].timestamp` | datetime | 是 | 原始消息时间，ISO-8601 |
+| `messages[].sender_role` | string | 是 | `user`、`agent` 或 `system` |
+| `messages[].content` | string | 是 | 原始消息正文 |
+
+#### Response
+
+```json
+{
+  "status": "ok",
+  "import_id": "uuid",
+  "user_id": "user_123",
+  "agent_id": "assistant_a",
+  "received_count": 2,
+  "stored_raw_count": 2,
+  "created_event_summary_count": 1,
+  "created_user_preference_count": 1,
+  "raw_memory_ids": ["memory_1", "memory_2"],
+  "event_summaries": [
+    {
+      "category": "agent_preference",
+      "title": "用户希望 AI 更有占有欲",
+      "summary": "在历史聊天中，用户要求该 AI 在角色扮演时占有欲更强、更主动。",
+      "start_time": "2026-07-01T21:10:00+08:00",
+      "end_time": "2026-07-01T21:11:00+08:00",
+      "memory_id": "memory_3"
+    }
+  ],
+  "user_preferences": [
+    {
+      "category": "communication",
+      "summary": "用户偏好更主动、更有占有欲的互动方式。",
+      "memory_id": "memory_4"
+    }
+  ],
+  "results": []
+}
+```
+
+关键规则：
+
+- 原始消息写入 `agent:{user_id}:{agent_id}`，保留 `speaker_role`、`speaker_id`、`speaker_name`、`timestamp`。
+- agent 事件总结写入 `agent:{user_id}:{agent_id}`，`type=event`。
+- 全局用户偏好写入 `user:{user_id}`，`type=preference`。
+- 事件和偏好都会尽量携带 `time_range` 和 `source_message_ids`，避免 AI 把历史事件误认为当前事件。
+
+---
+
 ### GET `/memory/agent`
 
 列出某个用户在某个 AI 角色下的 agent memory，包括互动偏好、关系上下文、短期事件、冲突记录等。

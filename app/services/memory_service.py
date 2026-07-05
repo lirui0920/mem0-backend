@@ -347,6 +347,72 @@ class MemoryService:
         }
         return self._route_and_store(route_input, summary_metadata, infer=False)
 
+    def add_imported_chat_message(
+        self,
+        user_id: str,
+        agent_id: str,
+        content: str,
+        metadata: dict[str, Any],
+    ) -> Any:
+        llm_tag = {
+            "emotion": metadata.get("emotion", "neutral"),
+            "type": "chat",
+            "importance": metadata.get("importance", 0.35),
+            "decay": 0.0,
+            "feedback_weight": 0.0,
+            "topic": metadata.get("topic", "imported_chat"),
+            "timestamp": metadata.get("timestamp") or datetime.utcnow().isoformat() + "Z",
+        }
+        route_input = MemoryRouteInput(
+            user_id=user_id,
+            agent_id=agent_id,
+            message=content,
+            should_store=True,
+            namespace="agent",
+            type="chat",
+            llm_tag=llm_tag,
+        )
+        import_metadata = {
+            **metadata,
+            "source": metadata.get("source", "local_chat_import"),
+            "role": metadata.get("speaker_role", "user"),
+            "agent_id": agent_id,
+            "imported": True,
+        }
+        return self._route_and_store(route_input, import_metadata, infer=False)
+
+    def add_imported_user_preference(
+        self,
+        user_id: str,
+        content: str,
+        metadata: dict[str, Any],
+    ) -> Any:
+        llm_tag = {
+            "emotion": metadata.get("emotion", "neutral"),
+            "type": "preference",
+            "importance": metadata.get("importance", 0.75),
+            "decay": 0.0,
+            "feedback_weight": 0.0,
+            "topic": metadata.get("topic", "user_preference"),
+            "timestamp": metadata.get("timestamp") or datetime.utcnow().isoformat() + "Z",
+        }
+        route_input = MemoryRouteInput(
+            user_id=user_id,
+            message=content,
+            should_store=True,
+            namespace="user",
+            type="preference",
+            llm_tag=llm_tag,
+        )
+        preference_metadata = {
+            **metadata,
+            "source": metadata.get("source", "local_chat_import_summary"),
+            "role": "system",
+            "summary_kind": "imported_user_preference",
+            "imported": True,
+        }
+        return self._route_and_store(route_input, preference_metadata, infer=False)
+
     def archive_memories(self, memories: list[dict[str, Any]], summary_time_range: dict[str, Any]) -> list[str]:
         archived_ids = []
         for memory in memories:

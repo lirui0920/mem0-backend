@@ -14,6 +14,8 @@ from app.core.security import verify_api_key
 from app.schemas import (
     AgentSummaryRunRequest,
     AgentSummaryRunResponse,
+    ChatImportRequest,
+    ChatImportResponse,
     ChatRequest,
     ChatResponse,
     DiaryGenerateRequest,
@@ -632,6 +634,147 @@ async def run_agent_summary(
     )
 
 
+@router.post("/memory/import/chat", response_model=ChatImportResponse)
+async def import_chat_history(
+    payload: ChatImportRequest,
+    memory_service: MemoryService = Depends(get_memory_service),
+    llm_service: LLMService = Depends(get_llm_service),
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
+) -> ChatImportResponse:
+    import_id = str(uuid.uuid4())
+    ordered_messages = sorted(payload.messages, key=lambda item: item.timestamp)
+    raw_memory_ids = []
+    results = []
+
+    if payload.store_raw:
+        for index, message in enumerate(ordered_messages, start=1):
+            content = _format_imported_message_content(payload, message)
+            metadata = _imported_message_metadata(payload, message, import_id, index)
+            result = await run_in_threadpool(
+                memory_service.add_imported_chat_message,
+                payload.user_id,
+                payload.agent_id,
+                content,
+                metadata,
+            )
+            results.append(result)
+            memory_id = _result_memory_id(result)
+            if memory_id:
+                raw_memory_ids.append(memory_id)
+                memory_debug.log_memory_lifecycle(
+                    memory_id,
+                    {
+                        "event": "created",
+                        "timestamp": _now_iso(),
+                        "score": float(metadata.get("importance", 0.35)),
+                        "source": "local_chat_import",
+                        "user_id": payload.user_id,
+                        "agent_id": payload.agent_id,
+                        "import_id": import_id,
+                        "original_timestamp": metadata.get("timestamp"),
+                        "speaker_role": metadata.get("speaker_role"),
+                    },
+                )
+
+    event_summaries: list[dict] = []
+    user_preferences: list[dict] = []
+    if payload.summarize:
+        summary_input = [
+            _import_message_for_llm(payload, message, import_id, index)
+            for index, message in enumerate(ordered_messages, start=1)
+        ]
+        imported_summary = await run_in_threadpool(
+            llm_service.summarize_imported_chat_batch,
+            payload.user_id,
+            payload.agent_id,
+            summary_input,
+        )
+        agent_events = _valid_agent_summary_events(imported_summary.get("agent_events", []), force=True)
+        for event in agent_events:
+            content = _format_agent_summary_event_content(payload.user_id, payload.agent_id, event)
+            metadata = _agent_summary_event_metadata(payload.user_id, payload.agent_id, event)
+            metadata.update(
+                {
+                    "import_id": import_id,
+                    "source": "local_chat_import_summary",
+                    "user_name": payload.user_name,
+                    "agent_name": payload.agent_name,
+                    "target_name": payload.agent_name,
+                    "conversation_user_name": payload.user_name,
+                    "conversation_agent_name": payload.agent_name,
+                }
+            )
+            result = await run_in_threadpool(
+                memory_service.add_agent_interaction_summary,
+                payload.user_id,
+                payload.agent_id,
+                content,
+                metadata,
+            )
+            results.append(result)
+            memory_id = _result_memory_id(result)
+            created = {**event, "content": content, "memory_id": memory_id}
+            event_summaries.append(created)
+            if memory_id:
+                memory_debug.log_memory_lifecycle(
+                    memory_id,
+                    {
+                        "event": "created",
+                        "timestamp": _now_iso(),
+                        "score": float(metadata.get("importance", 0.8)),
+                        "source": "local_chat_import_summary",
+                        "user_id": payload.user_id,
+                        "agent_id": payload.agent_id,
+                        "import_id": import_id,
+                        "category": metadata.get("interaction_category"),
+                        "time_range": metadata.get("time_range"),
+                    },
+                )
+
+        for preference in _valid_imported_user_preferences(imported_summary.get("user_preferences", [])):
+            content = _format_imported_user_preference_content(payload.user_id, preference)
+            metadata = _imported_user_preference_metadata(payload, preference, import_id)
+            result = await run_in_threadpool(
+                memory_service.add_imported_user_preference,
+                payload.user_id,
+                content,
+                metadata,
+            )
+            results.append(result)
+            memory_id = _result_memory_id(result)
+            created = {**preference, "content": content, "memory_id": memory_id}
+            user_preferences.append(created)
+            if memory_id:
+                memory_debug.log_memory_lifecycle(
+                    memory_id,
+                    {
+                        "event": "created",
+                        "timestamp": _now_iso(),
+                        "score": float(metadata.get("importance", 0.75)),
+                        "source": "local_chat_import_user_preference",
+                        "user_id": payload.user_id,
+                        "import_id": import_id,
+                        "category": metadata.get("preference_category"),
+                        "time_range": metadata.get("time_range"),
+                    },
+                )
+
+    return ChatImportResponse(
+        status="ok",
+        import_id=import_id,
+        user_id=payload.user_id,
+        agent_id=payload.agent_id,
+        received_count=len(payload.messages),
+        stored_raw_count=len(raw_memory_ids),
+        created_event_summary_count=len(event_summaries),
+        created_user_preference_count=len(user_preferences),
+        raw_memory_ids=raw_memory_ids,
+        event_summaries=event_summaries,
+        user_preferences=user_preferences,
+        results=results,
+    )
+
+
 @router.get("/memory/lifecycle/{user_id}")
 async def memory_lifecycle(
     user_id: str,
@@ -1145,7 +1288,7 @@ def _agent_summary_event_metadata(user_id: str, agent_id: str, event: dict) -> d
     now = _now_iso()
     start_time = str(event.get("start_time") or "")
     end_time = str(event.get("end_time") or "")
-    source_memory_ids = event.get("source_memory_ids")
+    source_memory_ids = event.get("source_memory_ids") or event.get("source_message_ids")
     if not isinstance(source_memory_ids, list):
         source_memory_ids = []
     try:
@@ -1174,6 +1317,165 @@ def _agent_summary_event_metadata(user_id: str, agent_id: str, event: dict) -> d
         "source_memory_ids": [str(memory_id) for memory_id in source_memory_ids],
         "preference_update": str(event.get("preference_update") or ""),
         "follow_up": str(event.get("follow_up") or ""),
+    }
+
+
+def _format_imported_message_content(payload: ChatImportRequest, message) -> str:
+    sender_name = message.sender_name or _sender_default_name(payload, message.sender_role)
+    timestamp = message.timestamp.isoformat()
+    return "\n".join(
+        [
+            "导入的历史聊天原文",
+            f"时间：{timestamp}",
+            f"发言者：{message.sender_role}:{sender_name}",
+            f"用户：{payload.user_name or payload.user_id}",
+            f"AI 角色：{payload.agent_name or payload.agent_id}",
+            f"内容：{message.content}",
+        ]
+    )
+
+
+def _imported_message_metadata(payload: ChatImportRequest, message, import_id: str, index: int) -> dict:
+    message_id = message.message_id or f"{import_id}:{index}"
+    timestamp = message.timestamp.isoformat()
+    sender_id = message.sender_id or (payload.user_id if message.sender_role == "user" else payload.agent_id)
+    sender_name = message.sender_name or _sender_default_name(payload, message.sender_role)
+    metadata = {
+        "timestamp": timestamp,
+        "importance": 0.35,
+        "emotion": "neutral",
+        "topic": "imported_chat",
+        "source": payload.source,
+        "import_id": import_id,
+        "import_message_id": message_id,
+        "import_index": index,
+        "original_timestamp": timestamp,
+        "user_name": payload.user_name,
+        "agent_name": payload.agent_name,
+        "conversation_user_id": payload.user_id,
+        "conversation_user_name": payload.user_name,
+        "conversation_agent_id": payload.agent_id,
+        "conversation_agent_name": payload.agent_name,
+    }
+    if message.sender_role == "agent":
+        metadata.update(
+            {
+                "speaker_role": "agent",
+                "speaker_id": sender_id,
+                "speaker_name": sender_name,
+                "target_role": "user",
+                "target_id": payload.user_id,
+                "target_name": payload.user_name,
+            }
+        )
+    elif message.sender_role == "system":
+        metadata.update(
+            {
+                "speaker_role": "system",
+                "speaker_id": sender_id or "system",
+                "speaker_name": sender_name or "system",
+                "target_role": "agent",
+                "target_id": payload.agent_id,
+                "target_name": payload.agent_name,
+            }
+        )
+    else:
+        metadata.update(
+            {
+                "speaker_role": "user",
+                "speaker_id": sender_id,
+                "speaker_name": sender_name,
+                "target_role": "agent",
+                "target_id": payload.agent_id,
+                "target_name": payload.agent_name,
+            }
+        )
+    return metadata
+
+
+def _import_message_for_llm(payload: ChatImportRequest, message, import_id: str, index: int) -> dict:
+    metadata = _imported_message_metadata(payload, message, import_id, index)
+    return {
+        "message_id": metadata["import_message_id"],
+        "timestamp": metadata["timestamp"],
+        "sender_role": metadata["speaker_role"],
+        "sender_id": metadata["speaker_id"],
+        "sender_name": metadata.get("speaker_name"),
+        "content": message.content,
+    }
+
+
+def _sender_default_name(payload: ChatImportRequest, sender_role: str) -> str | None:
+    if sender_role == "user":
+        return payload.user_name
+    if sender_role == "agent":
+        return payload.agent_name
+    return "system"
+
+
+def _valid_imported_user_preferences(preferences: list[dict]) -> list[dict]:
+    valid = []
+    for preference in preferences:
+        if not isinstance(preference, dict):
+            continue
+        summary = str(preference.get("summary") or "").strip()
+        if not summary:
+            continue
+        preference["summary"] = summary
+        preference["category"] = str(preference.get("category") or "other")
+        valid.append(preference)
+    return valid
+
+
+def _format_imported_user_preference_content(user_id: str, preference: dict) -> str:
+    category = str(preference.get("category") or "other")
+    start_time = str(preference.get("start_time") or "未知开始时间")
+    end_time = str(preference.get("end_time") or "未知结束时间")
+    summary = str(preference.get("summary") or "")
+    return "\n".join(
+        [
+            "导入聊天提取的用户偏好",
+            f"用户 ID：{user_id}",
+            f"偏好分类：{category}",
+            f"证据时间范围：{start_time} 至 {end_time}",
+            f"偏好总结：{summary}",
+        ]
+    )
+
+
+def _imported_user_preference_metadata(payload: ChatImportRequest, preference: dict, import_id: str) -> dict:
+    now = _now_iso()
+    start_time = str(preference.get("start_time") or "")
+    end_time = str(preference.get("end_time") or "")
+    source_message_ids = preference.get("source_message_ids")
+    if not isinstance(source_message_ids, list):
+        source_message_ids = []
+    try:
+        importance = float(preference.get("importance", 0.75))
+    except (TypeError, ValueError):
+        importance = 0.75
+    importance = max(0.0, min(1.0, importance))
+    return {
+        "timestamp": end_time or start_time or now,
+        "importance": importance,
+        "emotion": "neutral",
+        "topic": "user_preference",
+        "import_id": import_id,
+        "user_name": payload.user_name,
+        "agent_name": payload.agent_name,
+        "speaker_role": "system",
+        "speaker_id": "imported_chat_preference_summary",
+        "subject_role": "user",
+        "subject_id": payload.user_id,
+        "subject_name": payload.user_name,
+        "conversation_agent_id": payload.agent_id,
+        "conversation_agent_name": payload.agent_name,
+        "preference_category": str(preference.get("category") or "other"),
+        "time_range": {
+            "start": start_time,
+            "end": end_time,
+        },
+        "source_message_ids": [str(message_id) for message_id in source_message_ids],
     }
 
 
