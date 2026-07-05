@@ -225,7 +225,16 @@ class LLMService:
         lines = []
         for index, memory in enumerate(memories, start=1):
             content = memory.get("memory") or memory.get("content") or str(memory)
+            metadata = memory.get("metadata") or {}
+            labels = []
+            if metadata.get("type"):
+                labels.append(f"type={metadata['type']}")
+            if metadata.get("user_name"):
+                labels.append(f"user_name={metadata['user_name']}")
+            if metadata.get("agent_name"):
+                labels.append(f"agent_name={metadata['agent_name']}")
             score = memory.get("score")
             score_text = f" (score={score:.3f})" if isinstance(score, float) else ""
-            lines.append(f"{index}. {content}{score_text}")
+            label_text = f" [{' / '.join(labels)}]" if labels else ""
+            lines.append(f"{index}. {content}{label_text}{score_text}")
         return "\n".join(lines)

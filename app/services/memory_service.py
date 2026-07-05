@@ -131,6 +131,9 @@ class MemoryService:
         metadata = {
             "source": sleep.source,
             "role": "system",
+            "user_name": sleep.user_name,
+            "agent_display_id": sleep.agent_id,
+            "agent_name": sleep.agent_name,
             "sleep_start": sleep.sleep_start.isoformat(),
             "sleep_end": sleep.sleep_end.isoformat(),
             "sleep_duration": sleep_duration,

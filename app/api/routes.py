@@ -180,6 +180,9 @@ async def ingest_sleep(
             "request_id": request_id,
             "trace_id": request_id,
             "user_id": payload.user_id,
+            "user_name": payload.user_name,
+            "agent_id": payload.agent_id,
+            "agent_name": payload.agent_name,
             "outcome": "stored",
             "reason": "sleep_ingestion",
             "stage": "sleep_api_mem0_add",
@@ -198,6 +201,9 @@ async def ingest_sleep(
             "source": payload.source,
             "trace_id": request_id,
             "stage": "sleep_api",
+            "user_name": payload.user_name,
+            "agent_id": payload.agent_id,
+            "agent_name": payload.agent_name,
         },
     )
     background_tasks.add_task(
@@ -253,7 +259,9 @@ async def chat(
         _store_memory_background,
         request_id,
         payload.user_id,
+        payload.user_name,
         payload.agent_id,
+        payload.agent_name,
         payload.message,
         memories,
         agent_core,
@@ -285,7 +293,13 @@ async def chat(
             "trace_id": core_result.trace_id,
             "user_id": payload.user_id,
             "stage": "memory_ranking",
-            "input": {"message": payload.message, "memory_count": len(memories)},
+            "input": {
+                "message": payload.message,
+                "memory_count": len(memories),
+                "user_name": payload.user_name,
+                "agent_id": payload.agent_id,
+                "agent_name": payload.agent_name,
+            },
             "output": {"ranked_memory_ids": [str(memory.get("id")) for memory in memories if memory.get("id")]},
             "ranking": memories,
         }
@@ -295,6 +309,9 @@ async def chat(
             {
                 "trace_id": core_result.trace_id,
                 "user_id": payload.user_id,
+                "user_name": payload.user_name,
+                "agent_id": payload.agent_id,
+                "agent_name": payload.agent_name,
                 "stage": "event_decider",
                 "input": core_result.trace["stages"]["event_decider"]["input"],
                 "output": core_result.trigger_decision.model_dump(),
@@ -408,7 +425,7 @@ async def add_memory(
             "manual",
             "user",
             [],
-            payload.metadata,
+            _identity_metadata(payload.user_name, payload.agent_name, payload.metadata),
         )
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -418,10 +435,18 @@ async def add_memory(
                 "request_id": request_id,
                 "trace_id": request_id,
                 "user_id": payload.user_id,
+                "user_name": payload.user_name,
+                "agent_id": payload.agent_id,
+                "agent_name": payload.agent_name,
                 "outcome": "rejected",
                 "reason": write_result.reason,
                 "stage": "manual_agent_core_decision",
-                "input": {"content": payload.content, "agent_id": payload.agent_id},
+                "input": {
+                    "content": payload.content,
+                    "agent_id": payload.agent_id,
+                    "user_name": payload.user_name,
+                    "agent_name": payload.agent_name,
+                },
                 "output": {"should_store": False, "reason": write_result.reason},
             }
         )
@@ -432,10 +457,18 @@ async def add_memory(
             "request_id": request_id,
             "trace_id": request_id,
             "user_id": payload.user_id,
+            "user_name": payload.user_name,
+            "agent_id": payload.agent_id,
+            "agent_name": payload.agent_name,
             "outcome": "stored",
             "reason": write_result.reason,
             "stage": "manual_agent_core_store",
-            "input": {"content": payload.content, "agent_id": payload.agent_id},
+            "input": {
+                "content": payload.content,
+                "agent_id": payload.agent_id,
+                "user_name": payload.user_name,
+                "agent_name": payload.agent_name,
+            },
             "output": {"should_store": True, "result": write_result.result},
             "memory": write_result.memory.model_dump() if write_result.memory else None,
             "result": write_result.result,
@@ -450,6 +483,9 @@ async def add_memory(
                 "score": write_result.memory.metadata.importance,
                 "source": "manual",
                 "trace_id": request_id,
+                "user_name": payload.user_name,
+                "agent_id": payload.agent_id,
+                "agent_name": payload.agent_name,
             },
         )
     return MemoryAddResponse(memory=write_result.memory, result=write_result.result)
@@ -670,7 +706,9 @@ async def generate_diary(
 def _store_memory_background(
     request_id: str,
     user_id: str,
+    user_name: str | None,
     agent_id: str | None,
+    agent_name: str | None,
     message: str,
     retrieved_memories: list[dict],
     agent_core: AgentCore,
@@ -690,7 +728,8 @@ def _store_memory_background(
                 "context": {
                     "chat_history": [],
                     "retrieved_memories": retrieved_memories,
-                }
+                },
+                **_identity_metadata(user_name, agent_name),
             },
         )
         if not write_result.should_store:
@@ -699,10 +738,19 @@ def _store_memory_background(
                     "request_id": request_id,
                     "trace_id": trace_id,
                     "user_id": user_id,
+                    "user_name": user_name,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
                     "outcome": "rejected",
                     "reason": write_result.reason,
                     "stage": "agent_core_write_decision",
-                    "input": {"message": message, "agent_id": agent_id, "retrieved_memory_count": len(retrieved_memories)},
+                    "input": {
+                        "message": message,
+                        "agent_id": agent_id,
+                        "user_name": user_name,
+                        "agent_name": agent_name,
+                        "retrieved_memory_count": len(retrieved_memories),
+                    },
                     "output": {"should_store": False, "reason": write_result.reason},
                     "decision": write_result.decision,
                 }
@@ -715,10 +763,19 @@ def _store_memory_background(
                 "request_id": request_id,
                 "trace_id": trace_id,
                 "user_id": user_id,
+                "user_name": user_name,
+                "agent_id": agent_id,
+                "agent_name": agent_name,
                 "outcome": "stored",
                 "reason": write_result.reason,
                 "stage": "agent_core_mem0_add",
-                "input": {"message": message, "agent_id": agent_id, "retrieved_memory_count": len(retrieved_memories)},
+                "input": {
+                    "message": message,
+                    "agent_id": agent_id,
+                    "user_name": user_name,
+                    "agent_name": agent_name,
+                    "retrieved_memory_count": len(retrieved_memories),
+                },
                 "output": {"should_store": True, "result": write_result.result},
                 "memory": write_result.memory.model_dump() if write_result.memory else None,
                 "result": write_result.result,
@@ -733,6 +790,9 @@ def _store_memory_background(
                     "score": write_result.memory.metadata.importance,
                     "source": "chat",
                     "trace_id": trace_id,
+                    "user_name": user_name,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
                 },
             )
     except Exception:
@@ -741,10 +801,19 @@ def _store_memory_background(
                 "request_id": request_id,
                 "trace_id": trace_id,
                 "user_id": user_id,
+                "user_name": user_name,
+                "agent_id": agent_id,
+                "agent_name": agent_name,
                 "outcome": "error",
                 "reason": "background_exception",
                 "stage": "exception",
-                "input": {"message": message, "agent_id": agent_id, "retrieved_memory_count": len(retrieved_memories)},
+                "input": {
+                    "message": message,
+                    "agent_id": agent_id,
+                    "user_name": user_name,
+                    "agent_name": agent_name,
+                    "retrieved_memory_count": len(retrieved_memories),
+                },
                 "output": {"error": "background_exception"},
             }
         )
@@ -914,6 +983,19 @@ def _result_memory_id(result) -> str | None:
     if isinstance(result, list) and result:
         return _result_memory_id(result[0])
     return None
+
+
+def _identity_metadata(
+    user_name: str | None,
+    agent_name: str | None,
+    base: dict | None = None,
+) -> dict:
+    metadata = dict(base or {})
+    if user_name:
+        metadata["user_name"] = user_name
+    if agent_name:
+        metadata["agent_name"] = agent_name
+    return metadata
 
 
 def _now_iso() -> str:

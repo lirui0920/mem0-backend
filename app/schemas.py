@@ -18,7 +18,9 @@ class StructuredMemory(UnifiedMemory):
 
 class ChatRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
+    user_name: str | None = Field(default=None, max_length=128)
     agent_id: str | None = Field(default=None, max_length=128)
+    agent_name: str | None = Field(default=None, max_length=128)
     message: str = Field(min_length=1, max_length=8000)
 
 
@@ -33,7 +35,9 @@ class ChatResponse(BaseModel):
 
 class SleepInput(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
+    user_name: str | None = Field(default=None, max_length=128)
     agent_id: str | None = Field(default=None, max_length=128)
+    agent_name: str | None = Field(default=None, max_length=128)
     sleep_start: datetime
     sleep_end: datetime
     sleep_duration: float | None = Field(default=None, gt=0, le=24)
@@ -79,7 +83,9 @@ class MemoryStabilityTestRequest(BaseModel):
 
 class MemoryAddRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
+    user_name: str | None = Field(default=None, max_length=128)
     agent_id: str | None = Field(default=None, max_length=128)
+    agent_name: str | None = Field(default=None, max_length=128)
     content: str = Field(min_length=1, max_length=8000)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

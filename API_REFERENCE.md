@@ -285,7 +285,9 @@ GET /health
 ```json
 {
   "user_id": "user_123",
+  "user_name": "苏苏",
   "agent_id": "assistant_a",
+  "agent_name": "洛尘",
   "message": "我最近总是凌晨两点才睡，白天很累。"
 }
 ```
@@ -295,8 +297,16 @@ GET /health
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
 | `user_id` | string | 是 | 用户 ID |
+| `user_name` | string/null | 否 | 用户显示名，例如“苏苏”；用于总结可读性，不用于记忆归属 |
 | `agent_id` | string/null | 否 | agent ID；用于 agent 专属记忆 |
+| `agent_name` | string/null | 否 | AI 显示名/网名，例如“洛尘”；用于总结可读性，不用于记忆归属 |
 | `message` | string | 是 | 用户输入，最长 8000 字符 |
+
+身份规则：
+
+- `user_id` 和 `agent_id` 是稳定身份锚点，负责记忆归属。
+- `user_name` 和 `agent_name` 是显示名，写入 metadata，帮助总结输出“苏苏和洛尘……”这类自然描述。
+- 不要用昵称替代 ID；昵称可以改变，ID 必须稳定。
 
 #### Response
 
@@ -352,7 +362,9 @@ POST /chat
 ```json
 {
   "user_id": "user_123",
+  "user_name": "苏苏",
   "agent_id": "assistant_a",
+  "agent_name": "洛尘",
   "sleep_start": "2026-07-04T00:30:00+08:00",
   "sleep_end": "2026-07-04T08:10:00+08:00",
   "sleep_duration": 7.67,
@@ -368,7 +380,9 @@ POST /chat
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
 | `user_id` | string | 是 | 用户 ID |
+| `user_name` | string/null | 否 | 用户显示名，会写入 metadata，帮助睡眠总结和 debug 可读 |
 | `agent_id` | string/null | 否 | 调用来源相关 agent ID；当前睡眠记忆仍强制写入 user namespace |
+| `agent_name` | string/null | 否 | AI 显示名/网名，会写入 metadata；不影响睡眠记忆归属 |
 | `sleep_start` | datetime | 是 | 入睡开始时间，ISO-8601 |
 | `sleep_end` | datetime | 是 | 醒来/睡眠结束时间，必须晚于 `sleep_start` |
 | `sleep_duration` | float/null | 否 | 睡眠时长，单位小时；缺省时由 start/end 自动计算 |
@@ -423,6 +437,7 @@ Source: apple_watch
 - `/sleep` 不触发事件判断。
 - `/sleep` 不写入 agent namespace，即使请求带了 `agent_id`。
 - `/sleep` 强制写入 `user:{user_id}`。
+- `user_name` / `agent_name` 仅作为 metadata 保存，方便后续摘要和排查身份。
 - 记忆类型固定为 `sleep`。
 - baseline importance 为 `0.6`。
 - profile 更新为后台任务，不阻塞响应。
@@ -451,7 +466,9 @@ GET /debug/memory/profile/{user_id}
 ```json
 {
   "user_id": "user_123",
+  "user_name": "苏苏",
   "agent_id": "assistant_a",
+  "agent_name": "洛尘",
   "message": "我昨晚 23:30 睡，早上 7:20 醒，大概睡了 7 小时 50 分钟。"
 }
 ```
@@ -471,7 +488,9 @@ GET /debug/memory/profile/{user_id}
 ```json
 {
   "user_id": "user_123",
+  "user_name": "苏苏",
   "agent_id": "assistant_a",
+  "agent_name": "洛尘",
   "content": "I prefer gentle and concise replies from this assistant.",
   "metadata": {
     "type": "preference",
@@ -486,7 +505,9 @@ GET /debug/memory/profile/{user_id}
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
 | `user_id` | string | 是 | 用户 ID |
+| `user_name` | string/null | 否 | 用户显示名，会写入 metadata |
 | `agent_id` | string/null | 否 | agent ID |
+| `agent_name` | string/null | 否 | AI 显示名/网名，会写入 metadata |
 | `content` | string | 是 | 记忆内容 |
 | `metadata` | object | 否 | 附加元数据 |
 
@@ -1343,7 +1364,9 @@ Body：
 ```json
 {
   "user_id": "ios_user",
+  "user_name": "苏苏",
   "agent_id": "shortcut_agent",
+  "agent_name": "洛尘",
   "message": "我昨晚 1 点睡，今天很困。"
 }
 ```
@@ -1361,7 +1384,9 @@ response
 ```json
 {
   "user_id": "ios_user",
+  "user_name": "苏苏",
   "agent_id": "shortcut_agent",
+  "agent_name": "洛尘",
   "sleep_start": "2026-07-04T01:00:00+08:00",
   "sleep_end": "2026-07-04T08:00:00+08:00",
   "sleep_duration": 7.0,
