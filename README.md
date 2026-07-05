@@ -108,6 +108,21 @@ Dashboard 支持查看记忆总览、搜索记忆、查看 agent 专属记忆、
 - 距离上一次 summary 已超过 `SUMMARY_INTERVAL_SECONDS`，默认 24 小时
 - 未归档普通 memory 数量达到 `SUMMARY_MEMORY_BATCH_SIZE`，默认 100 条
 
+### `POST /memory/agent/summary/run`
+
+手动把某个用户和某个 AI 角色的多轮互动沉淀成多条 agent 事件总结。结果写回 `agent:{user_id}:{agent_id}`，类型为 `event`，并通过 `metadata.summary_kind=agent_interaction_summary` 标记。
+
+```json
+{
+  "user_id": "u_001",
+  "agent_id": "agent_001",
+  "force": true,
+  "limit": 200
+}
+```
+
+该接口会尽量按主题拆分，例如角色扮演、日常分享、冲突/吵架、调情风格、用户对该 AI 的偏好要求，而不是把所有内容挤进一条 summary。每条事件总结会带 `interaction_category`、`time_range`、`source_memory_ids` 和 `timestamp`，避免后续检索时把几天前的事误认为今天刚发生。
+
 ### `POST /diary/generate`
 
 ```json

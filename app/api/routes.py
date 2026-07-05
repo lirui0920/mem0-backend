@@ -12,6 +12,8 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import Settings, get_settings
 from app.core.security import verify_api_key
 from app.schemas import (
+    AgentSummaryRunRequest,
+    AgentSummaryRunResponse,
     ChatRequest,
     ChatResponse,
     DiaryGenerateRequest,
@@ -550,6 +552,86 @@ async def get_agent_summary(
     }
 
 
+@router.post("/memory/agent/summary/run", response_model=AgentSummaryRunResponse)
+async def run_agent_summary(
+    payload: AgentSummaryRunRequest,
+    memory_service: MemoryService = Depends(get_memory_service),
+    llm_service: LLMService = Depends(get_llm_service),
+    memory_debug: MemoryDebugService = Depends(get_memory_debug),
+) -> AgentSummaryRunResponse:
+    memories = await run_in_threadpool(memory_service.get_agent_memories, payload.user_id, payload.agent_id, payload.limit)
+    source_memories = [
+        memory
+        for memory in memories
+        if (memory.get("metadata") or {}).get("summary_kind") != "agent_interaction_summary"
+    ]
+    if not source_memories:
+        return AgentSummaryRunResponse(
+            created=False,
+            reason="no_agent_memories",
+            user_id=payload.user_id,
+            agent_id=payload.agent_id,
+        )
+    summary = await run_in_threadpool(
+        llm_service.summarize_agent_interaction_events,
+        payload.user_id,
+        payload.agent_id,
+        source_memories,
+    )
+    events = _valid_agent_summary_events(summary.get("events", []), payload.force)
+    if not events:
+        return AgentSummaryRunResponse(
+            created=False,
+            reason="no_distinct_agent_events",
+            user_id=payload.user_id,
+            agent_id=payload.agent_id,
+            source_memory_count=len(source_memories),
+            summaries=[],
+        )
+
+    results = []
+    created_summaries = []
+    for event in events:
+        content = _format_agent_summary_event_content(payload.user_id, payload.agent_id, event)
+        metadata = _agent_summary_event_metadata(payload.user_id, payload.agent_id, event)
+        result = await run_in_threadpool(
+            memory_service.add_agent_interaction_summary,
+            payload.user_id,
+            payload.agent_id,
+            content,
+            metadata,
+        )
+        results.append(result)
+        memory_id = _result_memory_id(result)
+        created = {**event, "content": content, "memory_id": memory_id}
+        created_summaries.append(created)
+        if memory_id:
+            memory_debug.log_memory_lifecycle(
+                memory_id,
+                {
+                    "event": "created",
+                    "timestamp": _now_iso(),
+                    "score": float(metadata.get("importance", 0.8)),
+                    "source": "agent_interaction_summary",
+                    "user_id": payload.user_id,
+                    "agent_id": payload.agent_id,
+                    "category": metadata.get("interaction_category"),
+                    "time_range": metadata.get("time_range"),
+                },
+            )
+
+    return AgentSummaryRunResponse(
+        created=bool(created_summaries),
+        reason="agent_interaction_summary_created",
+        user_id=payload.user_id,
+        agent_id=payload.agent_id,
+        source_memory_count=len(source_memories),
+        created_count=len(created_summaries),
+        summaries=created_summaries,
+        results=results,
+    )
+
+
 @router.get("/memory/lifecycle/{user_id}")
 async def memory_lifecycle(
     user_id: str,
@@ -1015,6 +1097,84 @@ def _identity_metadata(
         metadata.setdefault("target_name", agent_name)
         metadata.setdefault("conversation_agent_name", agent_name)
     return metadata
+
+
+def _valid_agent_summary_events(events: list[dict], force: bool = False) -> list[dict]:
+    valid = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        summary = str(event.get("summary") or "").strip()
+        title = str(event.get("title") or "").strip()
+        category = str(event.get("category") or "other").strip() or "other"
+        if not summary:
+            continue
+        if not force and len(summary) < 12 and not title:
+            continue
+        event["category"] = category
+        event["title"] = title or category
+        event["summary"] = summary
+        valid.append(event)
+    return valid
+
+
+def _format_agent_summary_event_content(user_id: str, agent_id: str, event: dict) -> str:
+    category = str(event.get("category") or "other")
+    title = str(event.get("title") or category)
+    start_time = str(event.get("start_time") or "未知开始时间")
+    end_time = str(event.get("end_time") or "未知结束时间")
+    summary = str(event.get("summary") or "")
+    preference_update = str(event.get("preference_update") or "").strip()
+    follow_up = str(event.get("follow_up") or "").strip()
+    parts = [
+        f"AI 角色互动事件总结：{title}",
+        f"用户 ID：{user_id}",
+        f"AI 角色 ID：{agent_id}",
+        f"事件分类：{category}",
+        f"发生时间范围：{start_time} 至 {end_time}",
+        f"事件总结：{summary}",
+    ]
+    if preference_update:
+        parts.append(f"偏好更新：{preference_update}")
+    if follow_up:
+        parts.append(f"后续互动建议：{follow_up}")
+    return "\n".join(parts)
+
+
+def _agent_summary_event_metadata(user_id: str, agent_id: str, event: dict) -> dict:
+    now = _now_iso()
+    start_time = str(event.get("start_time") or "")
+    end_time = str(event.get("end_time") or "")
+    source_memory_ids = event.get("source_memory_ids")
+    if not isinstance(source_memory_ids, list):
+        source_memory_ids = []
+    try:
+        importance = float(event.get("importance", 0.8))
+    except (TypeError, ValueError):
+        importance = 0.8
+    importance = max(0.0, min(1.0, importance))
+    return {
+        "timestamp": end_time or start_time or now,
+        "importance": importance,
+        "emotion": "neutral",
+        "topic": "agent_interaction",
+        "agent_id": agent_id,
+        "speaker_role": "system",
+        "speaker_id": "agent_interaction_summary",
+        "target_role": "agent",
+        "target_id": agent_id,
+        "conversation_user_id": user_id,
+        "conversation_agent_id": agent_id,
+        "interaction_category": str(event.get("category") or "other"),
+        "interaction_title": str(event.get("title") or ""),
+        "time_range": {
+            "start": start_time,
+            "end": end_time,
+        },
+        "source_memory_ids": [str(memory_id) for memory_id in source_memory_ids],
+        "preference_update": str(event.get("preference_update") or ""),
+        "follow_up": str(event.get("follow_up") or ""),
+    }
 
 
 def _now_iso() -> str:

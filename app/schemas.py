@@ -126,6 +126,24 @@ class SummaryRunResponse(BaseModel):
     result: dict[str, Any] | list[dict[str, Any]] | str | None = None
 
 
+class AgentSummaryRunRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    agent_id: str = Field(min_length=1, max_length=128)
+    force: bool = False
+    limit: int = Field(default=200, ge=1, le=1000)
+
+
+class AgentSummaryRunResponse(BaseModel):
+    created: bool
+    reason: str
+    user_id: str
+    agent_id: str
+    source_memory_count: int = 0
+    created_count: int = 0
+    summaries: list[dict[str, Any]] = Field(default_factory=list)
+    results: list[Any] = Field(default_factory=list)
+
+
 class DiaryGenerateRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
     timezone: str = Field(default="Asia/Shanghai", max_length=64)

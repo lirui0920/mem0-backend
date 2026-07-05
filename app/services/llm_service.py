@@ -198,6 +198,54 @@ class LLMService:
         summary["agent_id"] = agent_id
         return summary
 
+    def summarize_agent_interaction_events(
+        self,
+        user_id: str,
+        agent_id: str,
+        memories: list[dict],
+    ) -> dict[str, Any]:
+        memory_context = self._format_memories(memories)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你负责把某个用户和某个 AI 角色之间的多轮互动记忆，拆分成多条可检索的中文长期事件总结。"
+                    "不要把不同主题挤在同一条 summary 里。角色扮演、日常分享、吵架/冲突、调情风格、用户对该 AI 的要求，应尽量分开。"
+                    "请只基于提供的记忆，不要编造。"
+                    "Return only valid JSON matching this schema: "
+                    '{"user_id":"string","agent_id":"string","events":['
+                    '{"category":"roleplay|daily_share|conflict|flirting_style|agent_preference|boundary|repair|other",'
+                    '"title":"string","summary":"string","preference_update":"string",'
+                    '"follow_up":"string","importance":0.0,"start_time":"ISO-8601 or empty",'
+                    '"end_time":"ISO-8601 or empty","source_memory_ids":["string"]}'
+                    "]}. "
+                    "所有 string 字段必须使用简体中文。"
+                    "每个 event 只能表达一个主题。"
+                    "如果没有足够信息，不要输出空泛总结。"
+                    "summary 必须明确这是哪个用户和哪个 AI 之间的互动，并写清楚时间是历史时间，不要暗示一定发生在今天。"
+                    "agent_preference 用来记录用户希望这个 AI 做什么或保持什么风格，例如占有欲强、主动、温柔、解释清楚。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"user_id: {user_id}\n"
+                    f"agent_id: {agent_id}\n\n"
+                    f"agent 相关记忆:\n{memory_context}"
+                ),
+            },
+        ]
+        raw = self._complete_json(messages, max_tokens=1800)
+        try:
+            summary = __import__("json").loads(raw)
+        except JSONDecodeError as exc:
+            raise ValueError(f"LLM returned invalid agent event summary JSON: {raw}") from exc
+        summary["user_id"] = user_id
+        summary["agent_id"] = agent_id
+        events = summary.get("events")
+        summary["events"] = events if isinstance(events, list) else []
+        return summary
+
     def _complete(self, messages: list[dict[str, str]]) -> str:
         completion = self._client.chat.completions.create(
             model=self._settings.llm_chat_model,
@@ -227,8 +275,14 @@ class LLMService:
             content = memory.get("memory") or memory.get("content") or str(memory)
             metadata = memory.get("metadata") or {}
             labels = []
+            if memory.get("id"):
+                labels.append(f"id={memory['id']}")
             if metadata.get("type"):
                 labels.append(f"type={metadata['type']}")
+            if metadata.get("timestamp"):
+                labels.append(f"time={metadata['timestamp']}")
+            elif metadata.get("logged_epoch"):
+                labels.append(f"logged_epoch={metadata['logged_epoch']}")
             if metadata.get("speaker_role"):
                 speaker = metadata.get("speaker_name") or metadata.get("speaker_id") or metadata["speaker_role"]
                 labels.append(f"speaker={metadata['speaker_role']}:{speaker}")

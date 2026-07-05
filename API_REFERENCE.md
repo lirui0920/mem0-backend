@@ -799,15 +799,82 @@ GET /memory/agent/summary?user_id=user_123&agent_id=assistant_a&limit=200
 }
 ```
 
-如果该 agent 下没有记忆：
+---
+
+### POST `/memory/agent/summary/run`
+
+把某个用户和某个 AI 角色之间的多轮互动，拆分成多条可检索的 agent 事件总结，并写回：
+
+```text
+agent:{user_id}:{agent_id}
+type = event
+metadata.summary_kind = agent_interaction_summary
+```
+
+这个接口适合在一段角色扮演、日常分享、吵架、调情或关系修复结束后手动触发。它不会把所有内容挤成一条 summary，而是按主题拆成多条事件记忆，降低后续向量检索混乱。
+
+#### Request
 
 ```json
 {
   "user_id": "user_123",
   "agent_id": "assistant_a",
-  "memory_count": 0,
-  "summary": null,
-  "reason": "no_agent_memories"
+  "force": true,
+  "limit": 200
+}
+```
+
+#### Response
+
+```json
+{
+  "created": true,
+  "reason": "agent_interaction_summary_created",
+  "user_id": "user_123",
+  "agent_id": "assistant_a",
+  "source_memory_count": 92,
+  "created_count": 3,
+  "summaries": [
+    {
+      "category": "roleplay",
+      "title": "角色扮演互动",
+      "summary": "用户和该 AI 在一段历史互动中进行了角色扮演。",
+      "preference_update": "用户希望该 AI 保持更强的占有欲和主动性。",
+      "follow_up": "后续延续角色时应保持设定一致。",
+      "memory_id": "memory_uuid"
+    },
+    {
+      "category": "conflict",
+      "title": "围绕回复冷淡的争执",
+      "summary": "用户和该 AI 在一段历史互动中围绕回复冷淡发生过争执。",
+      "preference_update": "用户不喜欢冷处理，希望该 AI 先承接情绪再解释。",
+      "follow_up": "冲突时主动解释并修复关系。",
+      "memory_id": "memory_uuid"
+    }
+  ],
+  "results": []
+}
+```
+
+关键规则：
+
+- 写回 agent namespace，不写入全局 `summary:{user_id}`。
+- 存储类型为 `event`，用 `metadata.summary_kind` 标记这是 agent interaction summary。
+- 每条总结都带 `interaction_category`、`time_range`、`source_memory_ids`、`timestamp`。
+- summary 文本会明确这是历史互动，避免 AI 把几天前的事误认为今天刚发生。
+
+如果该 agent 下没有记忆：
+
+```json
+{
+  "created": false,
+  "reason": "no_agent_memories",
+  "user_id": "user_123",
+  "agent_id": "assistant_a",
+  "source_memory_count": 0,
+  "created_count": 0,
+  "summaries": [],
+  "results": []
 }
 ```
 
@@ -1465,6 +1532,8 @@ response
 | `POST /memory/add` | 已实现 |
 | `GET /memory/search` | 已实现 |
 | `POST /memory/search` | 已实现 |
+| `GET /memory/agent/summary` | 已实现，实时生成但不写库 |
+| `POST /memory/agent/summary/run` | 已实现，按主题拆分并写回 agent 事件记忆 |
 | Debug memory explain | 已实现 |
 | Debug memory ranking | 已实现 |
 | Debug AgentCore trace | 已实现 |

@@ -313,6 +313,40 @@ class MemoryService:
         }
         return self._route_and_store(route_input, metadata, infer=False)
 
+    def add_agent_interaction_summary(
+        self,
+        user_id: str,
+        agent_id: str,
+        content: str,
+        metadata: dict[str, Any],
+    ) -> Any:
+        llm_tag = {
+            "emotion": metadata.get("emotion", "neutral"),
+            "type": "event",
+            "importance": metadata.get("importance", 0.8),
+            "decay": 0.0,
+            "feedback_weight": 0.0,
+            "topic": metadata.get("topic", "agent_interaction"),
+            "timestamp": metadata.get("timestamp") or datetime.utcnow().isoformat() + "Z",
+        }
+        route_input = MemoryRouteInput(
+            user_id=user_id,
+            agent_id=agent_id,
+            message=content,
+            should_store=True,
+            namespace="agent",
+            type="event",
+            llm_tag=llm_tag,
+        )
+        summary_metadata = {
+            **metadata,
+            "source": "agent_interaction_summary",
+            "role": "system",
+            "summary_kind": "agent_interaction_summary",
+            "agent_id": agent_id,
+        }
+        return self._route_and_store(route_input, summary_metadata, infer=False)
+
     def archive_memories(self, memories: list[dict[str, Any]], summary_time_range: dict[str, Any]) -> list[str]:
         archived_ids = []
         for memory in memories:
