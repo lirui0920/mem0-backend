@@ -2,7 +2,7 @@ import logging
 import time
 import uuid
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import asdict
 from functools import lru_cache
 
@@ -168,6 +168,7 @@ async def ingest_sleep(
     payload: SleepInput,
     background_tasks: BackgroundTasks,
     memory_service: MemoryService = Depends(get_memory_service),
+    llm_service: LLMService = Depends(get_llm_service),
     memory_debug: MemoryDebugService = Depends(get_memory_debug),
     memory_evolution: MemoryEvolutionEngine = Depends(get_memory_evolution),
 ) -> SleepResponse:
@@ -269,6 +270,8 @@ async def chat(
         payload.message,
         memories,
         agent_core,
+        memory_service,
+        llm_service,
         memory_debug,
         core_result.trace_id,
     )
@@ -562,11 +565,7 @@ async def run_agent_summary(
     memory_debug: MemoryDebugService = Depends(get_memory_debug),
 ) -> AgentSummaryRunResponse:
     memories = await run_in_threadpool(memory_service.get_agent_memories, payload.user_id, payload.agent_id, payload.limit)
-    source_memories = [
-        memory
-        for memory in memories
-        if (memory.get("metadata") or {}).get("summary_kind") != "agent_interaction_summary"
-    ]
+    source_memories = _agent_summary_source_memories(memories, include_summarized=payload.force)
     if not source_memories:
         return AgentSummaryRunResponse(
             created=False,
@@ -574,14 +573,18 @@ async def run_agent_summary(
             user_id=payload.user_id,
             agent_id=payload.agent_id,
         )
-    summary = await run_in_threadpool(
-        llm_service.summarize_agent_interaction_events,
+    created_summaries, results = await run_in_threadpool(
+        _create_agent_summary_events_sync,
         payload.user_id,
         payload.agent_id,
         source_memories,
+        memory_service,
+        llm_service,
+        memory_debug,
+        "manual_agent_summary",
+        payload.force,
     )
-    events = _valid_agent_summary_events(summary.get("events", []), payload.force)
-    if not events:
+    if not created_summaries:
         return AgentSummaryRunResponse(
             created=False,
             reason="no_distinct_agent_events",
@@ -590,37 +593,6 @@ async def run_agent_summary(
             source_memory_count=len(source_memories),
             summaries=[],
         )
-
-    results = []
-    created_summaries = []
-    for event in events:
-        content = _format_agent_summary_event_content(payload.user_id, payload.agent_id, event)
-        metadata = _agent_summary_event_metadata(payload.user_id, payload.agent_id, event)
-        result = await run_in_threadpool(
-            memory_service.add_agent_interaction_summary,
-            payload.user_id,
-            payload.agent_id,
-            content,
-            metadata,
-        )
-        results.append(result)
-        memory_id = _result_memory_id(result)
-        created = {**event, "content": content, "memory_id": memory_id}
-        created_summaries.append(created)
-        if memory_id:
-            memory_debug.log_memory_lifecycle(
-                memory_id,
-                {
-                    "event": "created",
-                    "timestamp": _now_iso(),
-                    "score": float(metadata.get("importance", 0.8)),
-                    "source": "agent_interaction_summary",
-                    "user_id": payload.user_id,
-                    "agent_id": payload.agent_id,
-                    "category": metadata.get("interaction_category"),
-                    "time_range": metadata.get("time_range"),
-                },
-            )
 
     return AgentSummaryRunResponse(
         created=bool(created_summaries),
@@ -943,6 +915,8 @@ def _store_memory_background(
     message: str,
     retrieved_memories: list[dict],
     agent_core: AgentCore,
+    memory_service: MemoryService,
+    llm_service: LLMService,
     memory_debug: MemoryDebugService,
     trace_id: str | None = None,
 ) -> None:
@@ -1026,6 +1000,15 @@ def _store_memory_background(
                     "agent_name": agent_name,
                 },
             )
+            if agent_id:
+                _maybe_auto_agent_summary(
+                    user_id,
+                    agent_id,
+                    memory_service,
+                    llm_service,
+                    memory_debug,
+                    trace_id,
+                )
     except Exception:
         memory_debug.log_memory_write(
             {
@@ -1259,6 +1242,216 @@ def _valid_agent_summary_events(events: list[dict], force: bool = False) -> list
         event["summary"] = summary
         valid.append(event)
     return valid
+
+
+def _agent_summary_source_memories(memories: list[dict], include_summarized: bool = False) -> list[dict]:
+    source = []
+    for memory in memories:
+        metadata = memory.get("metadata") or {}
+        if metadata.get("summary_kind") == "agent_interaction_summary":
+            continue
+        if not include_summarized and metadata.get("agent_summary_batch_id"):
+            continue
+        source.append(memory)
+    return source
+
+
+def _should_auto_agent_summary(memories: list[dict]) -> tuple[bool, str]:
+    if not memories:
+        return False, "no_unsummarized_agent_memories"
+    char_count = sum(len(str(memory.get("memory") or memory.get("content") or "")) for memory in memories)
+    text = "\n".join(str(memory.get("memory") or memory.get("content") or "") for memory in memories)
+    relationship_signals = (
+        "吵架",
+        "冷淡",
+        "委屈",
+        "生气",
+        "调情",
+        "暧昧",
+        "拉扯",
+        "哄我",
+        "占有欲",
+        "角色扮演",
+        "主动一点",
+        "你刚才",
+        "我们刚才",
+        "道歉",
+        "解释",
+        "误会",
+        "flirt",
+        "roleplay",
+        "possessive",
+    )
+    has_signal = any(signal.lower() in text.lower() for signal in relationship_signals)
+    if len(memories) >= 80:
+        return True, "agent_memory_count_threshold"
+    if char_count >= 3000:
+        return True, "agent_char_count_threshold"
+    if has_signal and char_count >= 800:
+        return True, "agent_relationship_signal_threshold"
+    return False, "threshold_not_met"
+
+
+def _maybe_auto_agent_summary(
+    user_id: str,
+    agent_id: str,
+    memory_service: MemoryService,
+    llm_service: LLMService,
+    memory_debug: MemoryDebugService,
+    trace_id: str,
+) -> None:
+    memories = memory_service.get_agent_memories(user_id, agent_id, 1000)
+    source_memories = _agent_summary_source_memories(memories)
+    should_run, reason = _should_auto_agent_summary(source_memories)
+    if not should_run:
+        memory_debug.log_memory_write(
+            {
+                "request_id": trace_id,
+                "trace_id": trace_id,
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "outcome": "skipped",
+                "reason": reason,
+                "stage": "auto_agent_summary_check",
+                "input": {"source_memory_count": len(source_memories)},
+                "output": {"should_summarize": False},
+            }
+        )
+        return
+    created_summaries, _ = _create_agent_summary_events_sync(
+        user_id,
+        agent_id,
+        source_memories,
+        memory_service,
+        llm_service,
+        memory_debug,
+        reason,
+        False,
+    )
+    memory_debug.log_memory_write(
+        {
+            "request_id": trace_id,
+            "trace_id": trace_id,
+            "user_id": user_id,
+            "agent_id": agent_id,
+            "outcome": "created" if created_summaries else "skipped",
+            "reason": reason if created_summaries else "no_distinct_agent_events",
+            "stage": "auto_agent_summary",
+            "input": {"source_memory_count": len(source_memories)},
+            "output": {"created_count": len(created_summaries)},
+        }
+    )
+
+
+def _create_agent_summary_events_sync(
+    user_id: str,
+    agent_id: str,
+    source_memories: list[dict],
+    memory_service: MemoryService,
+    llm_service: LLMService,
+    memory_debug: MemoryDebugService,
+    reason: str,
+    force: bool = False,
+) -> tuple[list[dict], list]:
+    summary = llm_service.summarize_agent_interaction_events(user_id, agent_id, source_memories)
+    events = _valid_agent_summary_events(summary.get("events", []), force)
+    if not events:
+        return [], []
+
+    batch_id = str(uuid.uuid4())
+    results = []
+    created_summaries = []
+    for event in events:
+        event = _ensure_agent_event_time_range(event, source_memories)
+        content = _format_agent_summary_event_content(user_id, agent_id, event)
+        metadata = _agent_summary_event_metadata(user_id, agent_id, event)
+        metadata["agent_summary_batch_id"] = batch_id
+        metadata["agent_summary_reason"] = reason
+        result = memory_service.add_agent_interaction_summary(user_id, agent_id, content, metadata)
+        results.append(result)
+        memory_id = _result_memory_id(result)
+        created = {**event, "content": content, "memory_id": memory_id}
+        created_summaries.append(created)
+        if memory_id:
+            memory_debug.log_memory_lifecycle(
+                memory_id,
+                {
+                    "event": "created",
+                    "timestamp": _now_iso(),
+                    "score": float(metadata.get("importance", 0.8)),
+                    "source": "agent_interaction_summary",
+                    "user_id": user_id,
+                    "agent_id": agent_id,
+                    "category": metadata.get("interaction_category"),
+                    "time_range": metadata.get("time_range"),
+                    "agent_summary_batch_id": batch_id,
+                    "reason": reason,
+                },
+            )
+    _mark_agent_source_memories_summarized(memory_service, source_memories, batch_id, created_summaries)
+    return created_summaries, results
+
+
+def _ensure_agent_event_time_range(event: dict, source_memories: list[dict]) -> dict:
+    if event.get("start_time") and event.get("end_time"):
+        return event
+    epochs = []
+    iso_values = []
+    source_ids = {str(item) for item in (event.get("source_memory_ids") or event.get("source_message_ids") or [])}
+    for memory in source_memories:
+        metadata = memory.get("metadata") or {}
+        memory_id = str(memory.get("id") or metadata.get("id") or "")
+        if source_ids and memory_id not in source_ids and str(metadata.get("import_message_id") or "") not in source_ids:
+            continue
+        timestamp = metadata.get("timestamp") or metadata.get("original_timestamp")
+        if isinstance(timestamp, str) and timestamp:
+            iso_values.append(timestamp)
+            try:
+                epochs.append(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp())
+            except ValueError:
+                continue
+    if not iso_values and source_ids:
+        return event
+    if not iso_values:
+        for memory in source_memories:
+            metadata = memory.get("metadata") or {}
+            timestamp = metadata.get("timestamp") or metadata.get("original_timestamp")
+            if isinstance(timestamp, str) and timestamp:
+                iso_values.append(timestamp)
+                try:
+                    epochs.append(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp())
+                except ValueError:
+                    continue
+    if not iso_values:
+        return event
+    if epochs:
+        start = datetime.fromtimestamp(min(epochs), timezone.utc).isoformat()
+        end = datetime.fromtimestamp(max(epochs), timezone.utc).isoformat()
+    else:
+        start = iso_values[0]
+        end = iso_values[-1]
+    event.setdefault("start_time", start)
+    event.setdefault("end_time", end)
+    return event
+
+
+def _mark_agent_source_memories_summarized(
+    memory_service: MemoryService,
+    source_memories: list[dict],
+    batch_id: str,
+    created_summaries: list[dict],
+) -> None:
+    summary_ids = [summary.get("memory_id") for summary in created_summaries if summary.get("memory_id")]
+    now_epoch = int(time.time())
+    for memory in source_memories:
+        memory_id = memory.get("id")
+        if not memory_id:
+            continue
+        metadata = dict(memory.get("metadata") or {})
+        metadata["agent_summary_batch_id"] = batch_id
+        metadata["agent_summary_created_at"] = now_epoch
+        metadata["agent_summary_memory_ids"] = summary_ids
+        memory_service.update_memory_metadata(str(memory_id), metadata)
 
 
 def _format_agent_summary_event_content(user_id: str, agent_id: str, event: dict) -> str:
