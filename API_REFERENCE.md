@@ -671,6 +671,87 @@ Debug 模式：
 
 ---
 
+### GET `/memory/agent`
+
+列出某个用户在某个 AI 角色下的 agent memory，包括互动偏好、关系上下文、短期事件、冲突记录等。
+
+#### Request
+
+```http
+GET /memory/agent?user_id=user_123&agent_id=assistant_a&limit=100
+```
+
+#### Response
+
+```json
+{
+  "user_id": "user_123",
+  "agent_id": "assistant_a",
+  "namespace": "agent:user_123:assistant_a",
+  "memory_count": 3,
+  "memories": []
+}
+```
+
+说明：
+
+- 只有写入 `agent:{user_id}:{agent_id}` 的记忆会出现在这里。
+- 用户和某个 AI 发生的明显互动事件，例如争吵、调情、关系偏好、语气反馈，会优先进入 agent memory。
+- 普通全局事实、睡眠、健康等仍进入 user memory。
+
+---
+
+### GET `/memory/agent/summary`
+
+即时生成某个用户和某个 AI 角色之间的中文互动总结。这个接口不改变现有 summary namespace，不会把结果写入长期库；它基于当前 agent memory 实时生成。
+
+#### Request
+
+```http
+GET /memory/agent/summary?user_id=user_123&agent_id=assistant_a&limit=200
+```
+
+#### Response
+
+```json
+{
+  "user_id": "user_123",
+  "agent_id": "assistant_a",
+  "memory_count": 12,
+  "summary": {
+    "user_id": "user_123",
+    "agent_id": "assistant_a",
+    "interaction_summary": "用户和该 AI 角色近期互动较亲密，喜欢温柔、带一点拉扯感的回应。",
+    "relationship_tone": "暧昧、亲密、需要被认真回应",
+    "style_preferences": [
+      "喜欢温柔但不冷淡的调情",
+      "喜欢 AI 主动接住情绪",
+      "喜欢有一点拉扯感的表达"
+    ],
+    "recent_events": [
+      "用户曾围绕某个话题和该 AI 发生争执"
+    ],
+    "conflicts": [],
+    "boundaries": [],
+    "open_loops": []
+  }
+}
+```
+
+如果该 agent 下没有记忆：
+
+```json
+{
+  "user_id": "user_123",
+  "agent_id": "assistant_a",
+  "memory_count": 0,
+  "summary": null,
+  "reason": "no_agent_memories"
+}
+```
+
+---
+
 ### GET `/memory/lifecycle/{user_id}`
 
 查看某个用户的记忆生命周期统计。

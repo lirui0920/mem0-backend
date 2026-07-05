@@ -465,6 +465,49 @@ async def run_memory_summary(
     return await _run_summary(payload.user_id, payload.force, payload.limit, memory_service, llm_service, memory_debug)
 
 
+@router.get("/memory/agent")
+async def get_agent_memories(
+    user_id: str = Query(min_length=1, max_length=128),
+    agent_id: str = Query(min_length=1, max_length=128),
+    limit: int = Query(default=100, ge=1, le=1000),
+    memory_service: MemoryService = Depends(get_memory_service),
+) -> dict:
+    memories = await run_in_threadpool(memory_service.get_agent_memories, user_id, agent_id, limit)
+    return {
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "namespace": f"agent:{user_id}:{agent_id}",
+        "memory_count": len(memories),
+        "memories": memories,
+    }
+
+
+@router.get("/memory/agent/summary")
+async def get_agent_summary(
+    user_id: str = Query(min_length=1, max_length=128),
+    agent_id: str = Query(min_length=1, max_length=128),
+    limit: int = Query(default=200, ge=1, le=1000),
+    memory_service: MemoryService = Depends(get_memory_service),
+    llm_service: LLMService = Depends(get_llm_service),
+) -> dict:
+    memories = await run_in_threadpool(memory_service.get_agent_memories, user_id, agent_id, limit)
+    if not memories:
+        return {
+            "user_id": user_id,
+            "agent_id": agent_id,
+            "memory_count": 0,
+            "summary": None,
+            "reason": "no_agent_memories",
+        }
+    summary = await run_in_threadpool(llm_service.summarize_agent_memories, user_id, agent_id, memories)
+    return {
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "memory_count": len(memories),
+        "summary": summary,
+    }
+
+
 @router.get("/memory/lifecycle/{user_id}")
 async def memory_lifecycle(
     user_id: str,

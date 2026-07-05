@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from json import JSONDecodeError
+from typing import Any
 from uuid import uuid4
 
 from openai import OpenAI
@@ -127,13 +128,14 @@ class LLMService:
             {
                 "role": "system",
                 "content": (
-                    "You generate compact long-term memory summaries. "
+                    "你负责为长期记忆系统生成紧凑、准确的中文总结。"
                     "Return only valid JSON matching this schema: "
                     '{"user_id":"string","daily_summary":"string","emotional_trend":"string",'
                     '"key_events":["string"],"new_user_preferences":["string"],'
                     '"time_range":{"start":"ISO-8601","end":"ISO-8601","start_epoch":0,"end_epoch":0}}. '
-                    "Do not invent details. Summarize only the supplied memories. "
-                    "Keep key_events and new_user_preferences concise and deduplicated."
+                    "所有 string 字段必须使用简体中文。"
+                    "不要编造细节，只总结提供的记忆。"
+                    "key_events 和 new_user_preferences 要简洁、去重。"
                 ),
             },
             {
@@ -155,6 +157,45 @@ class LLMService:
             raise ValueError(f"LLM returned invalid summary JSON: {raw}") from exc
         if summary.user_id != user_id:
             raise ValueError("LLM returned a summary object for the wrong user.")
+        return summary
+
+    def summarize_agent_memories(
+        self,
+        user_id: str,
+        agent_id: str,
+        memories: list[dict],
+    ) -> dict[str, Any]:
+        memory_context = self._format_memories(memories)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你负责总结某个用户和某个 AI 角色之间的互动记忆。"
+                    "请只基于提供的记忆，输出简体中文 JSON，不要编造。"
+                    "Return only valid JSON matching this schema: "
+                    '{"user_id":"string","agent_id":"string","interaction_summary":"string",'
+                    '"relationship_tone":"string","style_preferences":["string"],'
+                    '"recent_events":["string"],"conflicts":["string"],"boundaries":["string"],'
+                    '"open_loops":["string"]}. '
+                    "重点总结：用户喜欢这个 AI 如何说话、如何调情/安抚/互动，最近发生过什么事件或冲突，以及后续需要注意什么边界。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"user_id: {user_id}\n"
+                    f"agent_id: {agent_id}\n\n"
+                    f"agent 相关记忆:\n{memory_context}"
+                ),
+            },
+        ]
+        raw = self._complete_json(messages, max_tokens=1200)
+        try:
+            summary = __import__("json").loads(raw)
+        except JSONDecodeError as exc:
+            raise ValueError(f"LLM returned invalid agent summary JSON: {raw}") from exc
+        summary["user_id"] = user_id
+        summary["agent_id"] = agent_id
         return summary
 
     def _complete(self, messages: list[dict[str, str]]) -> str:

@@ -256,6 +256,18 @@ class MemoryService:
         )
         return self._normalize_results(result)
 
+    def get_agent_memories(self, user_id: str, agent_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        result = self._client.get_all(
+            filters={
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "namespace": resolve_memory_namespace(user_id, "chat", agent_id),
+                "NOT": [{"archived": True}],
+            },
+            top_k=limit,
+        )
+        return self._normalize_results(result)
+
     def get_all_memories(self, user_id: str, limit: int = 1000) -> list[dict[str, Any]]:
         result = self._client.get_all(
             filters=self._with_default_namespaces(user_id),
@@ -437,10 +449,10 @@ class MemoryService:
         key_events = "\n".join(f"- {event}" for event in summary.key_events) or "- None"
         preferences = "\n".join(f"- {preference}" for preference in summary.new_user_preferences) or "- None"
         return (
-            f"Daily summary: {summary.daily_summary}\n"
-            f"Emotional trend: {summary.emotional_trend}\n"
-            f"Key events:\n{key_events}\n"
-            f"New user preferences:\n{preferences}"
+            f"每日总结：{summary.daily_summary}\n"
+            f"情绪趋势：{summary.emotional_trend}\n"
+            f"关键事件：\n{key_events}\n"
+            f"新增用户偏好：\n{preferences}"
         )
 
     @staticmethod
