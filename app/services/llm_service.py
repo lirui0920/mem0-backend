@@ -178,6 +178,7 @@ class LLMService:
                     '"recent_events":["string"],"conflicts":["string"],"boundaries":["string"],'
                     '"open_loops":["string"]}. '
                     "重点总结：用户喜欢这个 AI 如何说话、如何调情/安抚/互动，最近发生过什么事件或冲突，以及后续需要注意什么边界。"
+                    "数组字段每类最多 8 条，每条用 1 句简体中文事实描述，避免输出过长导致 JSON 截断。"
                 ),
             },
             {
@@ -189,7 +190,7 @@ class LLMService:
                 ),
             },
         ]
-        raw = self._complete_json(messages, max_tokens=1200)
+        raw = self._complete_json(messages, max_tokens=3200)
         try:
             summary = __import__("json").loads(raw)
         except JSONDecodeError as exc:
@@ -225,7 +226,9 @@ class LLMService:
                     "所有 string 字段必须使用简体中文。"
                     "每个 event 只能表达一个具体事件或一个具体讨论主题。"
                     "如果没有足够信息，不要输出空泛总结。"
-                    "summary 要直接记录发生了什么以及双方具体说法。"
+                    "summary 要直接记录发生了什么以及双方具体说法；信息充足时写 2-4 句事实描述。"
+                    "保留具体细节，例如时间段、金额、称呼、玩法、争论点、双方原始立场和最后结果。"
+                    "不要只写一句笼统概括；不要为了简短丢掉用户和 AI 各自说了什么。"
                     "不要升华成关系意义，不要写心理分析，不要把具体事实压缩成抽象标签。"
                     "例如应写：2026-06-30 下午，用户和该 AI 讨论性与爱的比例，AI 认为是三七，用户认为是一九。"
                     "不要写：这是一次关系观/边界事件。"
@@ -241,7 +244,7 @@ class LLMService:
                 ),
             },
         ]
-        raw = self._complete_json(messages, max_tokens=1800)
+        raw = self._complete_json(messages, max_tokens=3200)
         try:
             summary = __import__("json").loads(raw)
         except JSONDecodeError as exc:
@@ -272,6 +275,8 @@ class LLMService:
                     "不要把角色扮演、日常分享、吵架/冲突、观点讨论、调情游戏、用户对该 AI 的要求挤在同一条事件里。"
                     "同一天可以有多条事件；不要按日期强行合并。"
                     "事件类必须尽量携带 start_time 和 end_time；如果只能确定单条消息时间，start_time 和 end_time 可以相同。"
+                    "agent_events 的 summary 信息充足时写 2-4 句事实描述，保留具体时间段、金额、称呼、玩法、争论点、双方立场和结果。"
+                    "不要只写一句笼统概括，不要把多个主题压成一条，不要丢掉用户和 AI 各自说了什么。"
                     "所有总结都必须明确是历史记录，不要暗示发生在今天。"
                     "请只基于输入，不要编造。"
                     "Return only valid JSON matching this schema: "
@@ -296,7 +301,7 @@ class LLMService:
                 ),
             },
         ]
-        raw = self._complete_json(llm_messages, max_tokens=2400)
+        raw = self._complete_json(llm_messages, max_tokens=4000)
         try:
             summary = __import__("json").loads(raw)
         except JSONDecodeError as exc:

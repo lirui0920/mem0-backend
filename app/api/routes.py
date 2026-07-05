@@ -548,7 +548,10 @@ async def get_agent_summary(
             "summary": None,
             "reason": "no_agent_memories",
         }
-    summary = await run_in_threadpool(llm_service.summarize_agent_memories, user_id, agent_id, memories)
+    try:
+        summary = await run_in_threadpool(llm_service.summarize_agent_memories, user_id, agent_id, memories)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
         "user_id": user_id,
         "agent_id": agent_id,
@@ -655,12 +658,15 @@ async def import_chat_history(
             _import_message_for_llm(payload, message, import_id, index)
             for index, message in enumerate(ordered_messages, start=1)
         ]
-        imported_summary = await run_in_threadpool(
-            llm_service.summarize_imported_chat_batch,
-            payload.user_id,
-            payload.agent_id,
-            summary_input,
-        )
+        try:
+            imported_summary = await run_in_threadpool(
+                llm_service.summarize_imported_chat_batch,
+                payload.user_id,
+                payload.agent_id,
+                summary_input,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         agent_events = _valid_agent_summary_events(imported_summary.get("agent_events", []), force=True)
         for event in agent_events:
             content = _format_agent_summary_event_content(payload.user_id, payload.agent_id, event)
