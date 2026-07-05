@@ -121,7 +121,7 @@ Dashboard 支持查看记忆总览、搜索记忆、查看 agent 专属记忆、
 }
 ```
 
-该接口会尽量按主题拆分，例如角色扮演、日常分享、冲突/吵架、调情风格、用户对该 AI 的偏好要求，而不是把所有内容挤进一条 summary。每条事件总结会带 `interaction_category`、`time_range`、`source_memory_ids` 和 `timestamp`，避免后续检索时把几天前的事误认为今天刚发生。
+该接口会尽量按具体事件拆分，例如角色扮演、日常分享、冲突/吵架、调情游戏、观点讨论、用户对该 AI 的偏好要求，而不是把所有内容挤进一条 summary。每条事件记录会带 `interaction_category`、`time_range`、`source_memory_ids` 和 `timestamp`，并优先记录“什么时候、谁说了什么、双方观点或结果是什么”，避免后续检索时把几天前的事误认为今天刚发生。
 
 平时 `/chat` 写入 agent 记忆后也会自动检查是否需要沉淀 agent 分主题总结。当前触发条件为：未总结 agent 原始记忆达到 80 条、累计正文约 3000 字，或出现冲突/调情/角色扮演等关系信号且累计正文约 800 字。生成后会给源记忆标记 `agent_summary_batch_id`，避免重复总结同一批内容。
 

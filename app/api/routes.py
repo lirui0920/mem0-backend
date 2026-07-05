@@ -1471,11 +1471,19 @@ def _ensure_agent_event_time_range(event: dict, source_memories: list[dict]) -> 
     if not iso_values:
         return event
     if epochs:
-        start = datetime.fromtimestamp(min(epochs), timezone.utc).isoformat()
-        end = datetime.fromtimestamp(max(epochs), timezone.utc).isoformat()
+        start_dt = datetime.fromtimestamp(min(epochs), timezone.utc)
+        end_dt = datetime.fromtimestamp(max(epochs), timezone.utc)
+        start = start_dt.isoformat()
+        end = end_dt.isoformat()
+        event.setdefault("date", start_dt.date().isoformat())
     else:
         start = iso_values[0]
         end = iso_values[-1]
+        if not event.get("date"):
+            try:
+                event["date"] = datetime.fromisoformat(start.replace("Z", "+00:00")).date().isoformat()
+            except ValueError:
+                pass
     event.setdefault("start_time", start)
     event.setdefault("end_time", end)
     return event
@@ -1503,19 +1511,32 @@ def _mark_agent_source_memories_summarized(
 def _format_agent_summary_event_content(user_id: str, agent_id: str, event: dict) -> str:
     category = str(event.get("category") or "other")
     title = str(event.get("title") or category)
+    date = str(event.get("date") or "").strip()
+    time_hint = str(event.get("time_hint") or "").strip()
     start_time = str(event.get("start_time") or "未知开始时间")
     end_time = str(event.get("end_time") or "未知结束时间")
     summary = str(event.get("summary") or "")
+    user_side = str(event.get("user_side") or "").strip()
+    agent_side = str(event.get("agent_side") or "").strip()
+    result = str(event.get("result") or "").strip()
     preference_update = str(event.get("preference_update") or "").strip()
     follow_up = str(event.get("follow_up") or "").strip()
+    time_label = " ".join(part for part in [date, time_hint] if part) or f"{start_time} 至 {end_time}"
     parts = [
-        f"AI 角色互动事件总结：{title}",
+        f"AI 角色互动事件记录：{title}",
+        f"发生时间：{time_label}",
         f"用户 ID：{user_id}",
         f"AI 角色 ID：{agent_id}",
         f"事件分类：{category}",
         f"发生时间范围：{start_time} 至 {end_time}",
-        f"事件总结：{summary}",
+        f"事件记录：{summary}",
     ]
+    if user_side:
+        parts.append(f"用户说法：{user_side}")
+    if agent_side:
+        parts.append(f"AI 角色说法：{agent_side}")
+    if result:
+        parts.append(f"结果：{result}")
     if preference_update:
         parts.append(f"偏好更新：{preference_update}")
     if follow_up:
@@ -1549,11 +1570,16 @@ def _agent_summary_event_metadata(user_id: str, agent_id: str, event: dict) -> d
         "conversation_agent_id": agent_id,
         "interaction_category": str(event.get("category") or "other"),
         "interaction_title": str(event.get("title") or ""),
+        "event_date": str(event.get("date") or ""),
+        "time_hint": str(event.get("time_hint") or ""),
         "time_range": {
             "start": start_time,
             "end": end_time,
         },
         "source_memory_ids": [str(memory_id) for memory_id in source_memory_ids],
+        "user_side": str(event.get("user_side") or ""),
+        "agent_side": str(event.get("agent_side") or ""),
+        "result": str(event.get("result") or ""),
         "preference_update": str(event.get("preference_update") or ""),
         "follow_up": str(event.get("follow_up") or ""),
     }

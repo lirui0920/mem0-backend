@@ -777,9 +777,14 @@
         const meta = memoryMeta(item);
         const title = meta.interaction_title || meta.interaction_category || "角色事件总结";
         const range = meta.time_range || {};
-        const timeText = [formatMemoryTime(range.start), formatMemoryTime(range.end)].filter(Boolean).join(" 至 ") || formatMemoryTime(meta.timestamp) || "未知时间";
+        const timeText = [meta.event_date, meta.time_hint].filter(Boolean).join(" ") || [formatMemoryTime(range.start), formatMemoryTime(range.end)].filter(Boolean).join(" 至 ") || formatMemoryTime(meta.timestamp) || "未知时间";
         const sourceIds = meta.source_memory_ids || meta.source_message_ids || [];
         const namespace = meta.namespace || storedNamespace();
+        const details = [
+          meta.user_side ? `用户说法：${meta.user_side}` : "",
+          meta.agent_side ? `AI 角色说法：${meta.agent_side}` : "",
+          meta.result ? `结果：${meta.result}` : ""
+        ].filter(Boolean).join("\n");
         return `
           <article class="summary-card">
             <div class="summary-meta">
@@ -790,6 +795,7 @@
             </div>
             <h3>${escapeHtml(title)}</h3>
             <div class="summary-body">${escapeHtml(memoryContent(item))}</div>
+            ${details ? `<div class="summary-body" style="margin-top:10px;color:var(--muted)">${escapeHtml(details)}</div>` : ""}
           </article>
         `;
       }).join("");

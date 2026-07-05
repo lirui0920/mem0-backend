@@ -917,7 +917,7 @@ type = event
 metadata.summary_kind = agent_interaction_summary
 ```
 
-这个接口适合在一段角色扮演、日常分享、吵架、调情或关系修复结束后手动触发。它不会把所有内容挤成一条 summary，而是按主题拆成多条事件记忆，降低后续向量检索混乱。
+这个接口适合在一段角色扮演、日常分享、吵架、调情或关系修复结束后手动触发。它不会把所有内容挤成一条 summary，而是按具体事件拆成多条事实记录，降低后续向量检索混乱。事件总结应优先记录“什么时候、谁说了什么、双方观点或结果是什么”，避免过度心理分析。
 
 平时 `/chat` 写入 agent 记忆后，也会自动检查是否需要沉淀 agent 分主题总结。当前自动触发条件包括：未总结 agent 原始记忆达到 80 条、累计正文约 3000 字，或出现冲突/调情/角色扮演等关系信号且累计正文约 800 字。自动生成的总结同样会写入 `timestamp`、`time_range` 和 `source_memory_ids`，并给源记忆标记 `agent_summary_batch_id`，避免重复总结同一批内容。
 
@@ -946,9 +946,10 @@ metadata.summary_kind = agent_interaction_summary
     {
       "category": "roleplay",
       "title": "角色扮演互动",
-      "summary": "用户和该 AI 在一段历史互动中进行了角色扮演。",
-      "preference_update": "用户希望该 AI 保持更强的占有欲和主动性。",
-      "follow_up": "后续延续角色时应保持设定一致。",
+      "summary": "2026-07-04 晚上，用户和该 AI 讨论“金丝雀专属包养协议”，该 AI 拟定协议并约定每天 3 块钱。",
+      "user_side": "用户推进了金丝雀/包养协议的角色扮演设定。",
+      "agent_side": "该 AI 拟定协议并回应每天 3 块钱的设定。",
+      "result": "双方延续了该角色扮演设定。",
       "memory_id": "memory_uuid"
     },
     {

@@ -209,21 +209,27 @@ class LLMService:
             {
                 "role": "system",
                 "content": (
-                    "你负责把某个用户和某个 AI 角色之间的多轮互动记忆，拆分成多条可检索的中文长期事件总结。"
-                    "不要把不同主题挤在同一条 summary 里。角色扮演、日常分享、吵架/冲突、调情风格、用户对该 AI 的要求，应尽量分开。"
+                    "你负责把某个用户和某个 AI 角色之间的多轮互动记忆，拆分成多条可检索的中文长期事件记录。"
+                    "记录风格必须像事实记事本：具体、忠实、少推断。"
+                    "不要把不同主题挤在同一条事件里；同一天可以有多条事件。"
+                    "角色扮演、日常分享、吵架/冲突、观点讨论、调情游戏、用户对该 AI 的要求，应按具体事件分开。"
                     "请只基于提供的记忆，不要编造。"
                     "Return only valid JSON matching this schema: "
                     '{"user_id":"string","agent_id":"string","events":['
-                    '{"category":"roleplay|daily_share|conflict|flirting_style|agent_preference|boundary|repair|other",'
-                    '"title":"string","summary":"string","preference_update":"string",'
-                    '"follow_up":"string","importance":0.0,"start_time":"ISO-8601 or empty",'
+                    '{"category":"roleplay|daily_share|conflict|flirting_style|agent_preference|view_discussion|game|repair|other",'
+                    '"date":"YYYY-MM-DD or empty","time_hint":"上午|下午|晚上|凌晨|empty",'
+                    '"title":"string","summary":"string","user_side":"string","agent_side":"string","result":"string",'
+                    '"preference_update":"string","follow_up":"string","importance":0.0,"start_time":"ISO-8601 or empty",'
                     '"end_time":"ISO-8601 or empty","source_memory_ids":["string"]}'
                     "]}. "
                     "所有 string 字段必须使用简体中文。"
-                    "每个 event 只能表达一个主题。"
+                    "每个 event 只能表达一个具体事件或一个具体讨论主题。"
                     "如果没有足够信息，不要输出空泛总结。"
-                    "summary 必须明确这是哪个用户和哪个 AI 之间的互动，并写清楚时间是历史时间，不要暗示一定发生在今天。"
-                    "agent_preference 用来记录用户希望这个 AI 做什么或保持什么风格，例如占有欲强、主动、温柔、解释清楚。"
+                    "summary 要直接记录发生了什么以及双方具体说法。"
+                    "不要升华成关系意义，不要写心理分析，不要把具体事实压缩成抽象标签。"
+                    "例如应写：2026-06-30 下午，用户和该 AI 讨论性与爱的比例，AI 认为是三七，用户认为是一九。"
+                    "不要写：这是一次关系观/边界事件。"
+                    "agent_preference 只用于用户明确要求该 AI 做什么或保持什么风格，例如占有欲强、主动、温柔、解释清楚。"
                 ),
             },
             {
@@ -260,16 +266,20 @@ class LLMService:
                     "你负责把导入的本地历史聊天记录整理成长期记忆。"
                     "输入是按时间排序的原始消息，每条都有 timestamp、sender_role、sender_name 和 content。"
                     "请从原始消息中提取两类结果："
-                    "1. agent_events：用户和该 AI 角色之间的分主题互动事件总结，写回 agent 记忆；"
+                    "1. agent_events：用户和该 AI 角色之间的分主题互动事件记录，写回 agent 记忆；"
                     "2. user_preferences：稳定的全局用户偏好，写回 user 记忆。"
-                    "不要把角色扮演、日常分享、吵架/冲突、调情风格、用户对该 AI 的要求挤在同一条事件里。"
+                    "agent_events 必须像事实记事本：具体、忠实、少推断。"
+                    "不要把角色扮演、日常分享、吵架/冲突、观点讨论、调情游戏、用户对该 AI 的要求挤在同一条事件里。"
+                    "同一天可以有多条事件；不要按日期强行合并。"
                     "事件类必须尽量携带 start_time 和 end_time；如果只能确定单条消息时间，start_time 和 end_time 可以相同。"
                     "所有总结都必须明确是历史记录，不要暗示发生在今天。"
                     "请只基于输入，不要编造。"
                     "Return only valid JSON matching this schema: "
                     '{"user_id":"string","agent_id":"string",'
-                    '"agent_events":[{"category":"roleplay|daily_share|conflict|flirting_style|agent_preference|boundary|repair|other",'
-                    '"title":"string","summary":"string","preference_update":"string","follow_up":"string",'
+                    '"agent_events":[{"category":"roleplay|daily_share|conflict|flirting_style|agent_preference|view_discussion|game|repair|other",'
+                    '"date":"YYYY-MM-DD or empty","time_hint":"上午|下午|晚上|凌晨|empty",'
+                    '"title":"string","summary":"string","user_side":"string","agent_side":"string","result":"string",'
+                    '"preference_update":"string","follow_up":"string",'
                     '"importance":0.0,"start_time":"ISO-8601 or empty","end_time":"ISO-8601 or empty",'
                     '"source_message_ids":["string"]}],'
                     '"user_preferences":[{"category":"food|sleep|health|communication|lifestyle|boundary|other",'
