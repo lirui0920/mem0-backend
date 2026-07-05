@@ -481,9 +481,10 @@
             </div>
             <div class="toolbar">
               <button class="primary" id="loadAgentMemories">读取角色记忆</button>
-              <button id="loadAgentSummary">生成角色总结</button>
-              <button id="runAgentSummary">沉淀角色事件</button>
+              <button id="loadAgentSummary">预览总结（不保存）</button>
+              <button id="runAgentSummary">保存分主题总结</button>
             </div>
+            <div class="small-note">预览总结只显示一次，不写入库；保存分主题总结会写入 agent 记忆并携带时间范围。</div>
             <div id="agentTypeBars" class="bar-list" style="margin-top:14px"></div>
             <div class="split" style="margin-top:14px">
               <div>
@@ -499,7 +500,7 @@
                 <div class="section-head">
                   <div>
                     <h2>Agent Summary</h2>
-                    <div class="section-subtitle">实时总结或沉淀结果会显示在这里。</div>
+                    <div class="section-subtitle">预览总结不会保存；保存分主题总结后才会出现在左侧总结列表。</div>
                   </div>
                 </div>
                 <div id="agentSummaryOutput"></div>
@@ -708,7 +709,7 @@
 
     function isPreferenceLikeMemory(item) {
       const meta = memoryMeta(item);
-      return meta.interaction_category === "agent_preference" || /preference|偏好|要求|占有欲|主动/.test(memoryContent(item));
+      return isAgentSummaryMemory(item) && meta.interaction_category === "agent_preference";
     }
 
     function setAgentFilter(filter) {
@@ -723,8 +724,9 @@
         target.innerHTML = `
           <div class="empty">
             <div>还没有 agent 事件总结。</div>
+            <div class="small-note">如果你刚才只是点了“预览总结（不保存）”，刷新后不会留在这里。需要点“保存分主题总结”写入记忆库。</div>
             <div class="toolbar" style="justify-content:center">
-              <button class="primary" onclick="document.getElementById('runAgentSummary').click()">立即沉淀角色事件</button>
+              <button class="primary" onclick="document.getElementById('runAgentSummary').click()">保存分主题总结</button>
             </div>
           </div>
         `;
@@ -929,6 +931,7 @@
             `).join("") || `<div class="empty">没有创建新的总结</div>`}
           </div>
         `;
+        setAgentFilter("summaries");
         loadAgentMemories();
       } catch (err) {
         showError(target, err);
@@ -989,6 +992,9 @@
           <div class="small-note">import_id: ${escapeHtml(data.import_id || "")}</div>
           <div style="margin-top:14px"><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></div>
         `;
+        if ((data.created_event_summary_count ?? 0) > 0) {
+          setAgentFilter("summaries");
+        }
         loadAgentMemories();
       } catch (err) {
         showError(target, err);
