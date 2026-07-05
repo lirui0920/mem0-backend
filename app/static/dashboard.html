@@ -199,6 +199,22 @@
       background: #fff;
     }
 
+    .metric.clickable {
+      cursor: pointer;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+    }
+
+    .metric.clickable:hover {
+      border-color: rgba(15, 118, 110, 0.55);
+      box-shadow: 0 8px 22px rgba(15, 118, 110, 0.08);
+      transform: translateY(-1px);
+    }
+
+    .metric.clickable.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.1);
+    }
+
     .metric strong {
       display: block;
       font-size: 24px;
@@ -443,10 +459,10 @@
 
           <section id="agent" class="view">
             <div class="metrics">
-              <div class="metric"><strong id="agentTotalMemories">-</strong><span>agent 总记忆</span></div>
-              <div class="metric"><strong id="agentRawMessages">-</strong><span>原始聊天</span></div>
-              <div class="metric"><strong id="agentEventSummaries">-</strong><span>事件总结</span></div>
-              <div class="metric"><strong id="agentPreferenceHints">-</strong><span>偏好/要求</span></div>
+              <div class="metric clickable" data-agent-filter="all"><strong id="agentTotalMemories">-</strong><span>agent 总记忆</span></div>
+              <div class="metric clickable" data-agent-filter="raw"><strong id="agentRawMessages">-</strong><span>原始聊天</span></div>
+              <div class="metric clickable active" data-agent-filter="summaries"><strong id="agentEventSummaries">-</strong><span>事件总结</span></div>
+              <div class="metric clickable" data-agent-filter="preferences"><strong id="agentPreferenceHints">-</strong><span>偏好/要求</span></div>
             </div>
             <div class="field-row">
               <div>
@@ -695,9 +711,23 @@
       return meta.interaction_category === "agent_preference" || /preference|偏好|要求|占有欲|主动/.test(memoryContent(item));
     }
 
+    function setAgentFilter(filter) {
+      $("agentFilter").value = filter;
+      document.querySelectorAll("[data-agent-filter]").forEach((item) => {
+        item.classList.toggle("active", item.dataset.agentFilter === filter);
+      });
+    }
+
     function renderSummaryCards(target, items) {
       if (!items || !items.length) {
-        target.innerHTML = `<div class="empty">还没有 agent 事件总结。可以先点“沉淀角色事件”。</div>`;
+        target.innerHTML = `
+          <div class="empty">
+            <div>还没有 agent 事件总结。</div>
+            <div class="toolbar" style="justify-content:center">
+              <button class="primary" onclick="document.getElementById('runAgentSummary').click()">立即沉淀角色事件</button>
+            </div>
+          </div>
+        `;
         return;
       }
       target.innerHTML = items.map((item) => {
@@ -839,6 +869,7 @@
         renderBars($("agentTypeBars"), countBy(memories, (item) => memoryMeta(item).summary_kind || memoryMeta(item).interaction_category || memoryMeta(item).type));
 
         const filter = $("agentFilter").value;
+        setAgentFilter(filter);
         if (filter === "summaries") {
           renderSummaryCards(target, summaries);
         } else if (filter === "raw") {
@@ -1057,7 +1088,16 @@
     });
     $("runSearch").addEventListener("click", runSearch);
     $("loadAgentMemories").addEventListener("click", loadAgentMemories);
-    $("agentFilter").addEventListener("change", loadAgentMemories);
+    $("agentFilter").addEventListener("change", () => {
+      setAgentFilter($("agentFilter").value);
+      loadAgentMemories();
+    });
+    document.querySelectorAll("[data-agent-filter]").forEach((item) => {
+      item.addEventListener("click", () => {
+        setAgentFilter(item.dataset.agentFilter);
+        loadAgentMemories();
+      });
+    });
     $("loadAgentSummary").addEventListener("click", loadAgentSummary);
     $("runAgentSummary").addEventListener("click", runAgentSummary);
     $("fillImportExample").addEventListener("click", fillImportExample);
