@@ -906,7 +906,7 @@
             user_id: state.userId,
             agent_id: state.agentId,
             force: true,
-            limit: 200
+            limit: Number($("agentLimit").value || 1000)
           })
         });
         target.innerHTML = `

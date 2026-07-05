@@ -1353,43 +1353,89 @@ def _create_agent_summary_events_sync(
     reason: str,
     force: bool = False,
 ) -> tuple[list[dict], list]:
-    summary = llm_service.summarize_agent_interaction_events(user_id, agent_id, source_memories)
-    events = _valid_agent_summary_events(summary.get("events", []), force)
-    if not events:
-        return [], []
-
     batch_id = str(uuid.uuid4())
     results = []
     created_summaries = []
-    for event in events:
-        event = _ensure_agent_event_time_range(event, source_memories)
-        content = _format_agent_summary_event_content(user_id, agent_id, event)
-        metadata = _agent_summary_event_metadata(user_id, agent_id, event)
-        metadata["agent_summary_batch_id"] = batch_id
-        metadata["agent_summary_reason"] = reason
-        result = memory_service.add_agent_interaction_summary(user_id, agent_id, content, metadata)
-        results.append(result)
-        memory_id = _result_memory_id(result)
-        created = {**event, "content": content, "memory_id": memory_id}
-        created_summaries.append(created)
-        if memory_id:
-            memory_debug.log_memory_lifecycle(
-                memory_id,
+
+    for chunk_index, chunk in enumerate(_agent_summary_chunks(source_memories), start=1):
+        try:
+            summary = llm_service.summarize_agent_interaction_events(user_id, agent_id, chunk)
+        except Exception as exc:
+            memory_debug.log_memory_write(
                 {
-                    "event": "created",
-                    "timestamp": _now_iso(),
-                    "score": float(metadata.get("importance", 0.8)),
-                    "source": "agent_interaction_summary",
+                    "request_id": batch_id,
+                    "trace_id": batch_id,
                     "user_id": user_id,
                     "agent_id": agent_id,
-                    "category": metadata.get("interaction_category"),
-                    "time_range": metadata.get("time_range"),
-                    "agent_summary_batch_id": batch_id,
-                    "reason": reason,
-                },
+                    "outcome": "error",
+                    "reason": "agent_summary_chunk_failed",
+                    "stage": "agent_summary_chunk",
+                    "input": {"chunk_index": chunk_index, "chunk_memory_count": len(chunk), "reason": reason},
+                    "output": {"error": str(exc)},
+                }
             )
-    _mark_agent_source_memories_summarized(memory_service, source_memories, batch_id, created_summaries)
+            logger.exception("Agent summary chunk failed user_id=%s agent_id=%s chunk=%s", user_id, agent_id, chunk_index)
+            continue
+
+        events = _valid_agent_summary_events(summary.get("events", []), force)
+        if not events:
+            continue
+
+        chunk_created = []
+        for event in events:
+            event = _ensure_agent_event_time_range(event, chunk)
+            content = _format_agent_summary_event_content(user_id, agent_id, event)
+            metadata = _agent_summary_event_metadata(user_id, agent_id, event)
+            metadata["agent_summary_batch_id"] = batch_id
+            metadata["agent_summary_reason"] = reason
+            metadata["agent_summary_chunk_index"] = chunk_index
+            result = memory_service.add_agent_interaction_summary(user_id, agent_id, content, metadata)
+            results.append(result)
+            memory_id = _result_memory_id(result)
+            created = {**event, "content": content, "memory_id": memory_id}
+            created_summaries.append(created)
+            chunk_created.append(created)
+            if memory_id:
+                memory_debug.log_memory_lifecycle(
+                    memory_id,
+                    {
+                        "event": "created",
+                        "timestamp": _now_iso(),
+                        "score": float(metadata.get("importance", 0.8)),
+                        "source": "agent_interaction_summary",
+                        "user_id": user_id,
+                        "agent_id": agent_id,
+                        "category": metadata.get("interaction_category"),
+                        "time_range": metadata.get("time_range"),
+                        "agent_summary_batch_id": batch_id,
+                        "agent_summary_chunk_index": chunk_index,
+                        "reason": reason,
+                    },
+                )
+        _mark_agent_source_memories_summarized(memory_service, chunk, batch_id, chunk_created)
     return created_summaries, results
+
+
+def _agent_summary_chunks(
+    source_memories: list[dict],
+    max_memories: int = 80,
+    max_chars: int = 16000,
+) -> list[list[dict]]:
+    chunks = []
+    current = []
+    current_chars = 0
+    for memory in source_memories:
+        content = str(memory.get("memory") or memory.get("content") or "")
+        content_chars = len(content)
+        if current and (len(current) >= max_memories or current_chars + content_chars > max_chars):
+            chunks.append(current)
+            current = []
+            current_chars = 0
+        current.append(memory)
+        current_chars += content_chars
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _ensure_agent_event_time_range(event: dict, source_memories: list[dict]) -> dict:
